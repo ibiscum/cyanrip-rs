@@ -1,0 +1,10 @@
+Tracks ripped accurately: 10/12
+Tracks ripped partially accurately: 1/2
+
+Paranoia status counts:
+  READ:          512
+  VERIFY:        511
+  FIXUP_DROPPED: 2
+
+Ripping errors: 0
+Ripping finished at 2026-08-18T20:44:00

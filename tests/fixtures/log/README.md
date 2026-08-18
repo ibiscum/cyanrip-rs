@@ -7,6 +7,8 @@ Files:
 - mismatch.log: checksum line exists but does not match body digest.
 - trailing.log: valid checksum line exists, but trailing data follows it.
 - no_checksum.log: no `Log FUN512:` marker line.
+- report_start_expected.txt: deterministic start-report rendering snapshot.
+- report_finish_expected.txt: deterministic finish-report rendering snapshot.
 
 Expected verification outcomes:
 - valid.log -> VALID
