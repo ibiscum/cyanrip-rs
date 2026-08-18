@@ -91,3 +91,25 @@ Coverage notes:
 - Added app-level metadata pipeline orchestration in [../src/app.rs](../src/app.rs).
 - Flow order implemented and tested: DiscID -> MusicBrainz -> Cover Art -> AccurateRip.
 - Added parity-focused tests for disable flags and fallback behavior when upstream metadata fails.
+
+## M4 Audio Output Pipeline (WAV slice)
+
+Completed subtopic:
+- Added audio module scaffolding in [../src/audio/mod.rs](../src/audio/mod.rs).
+- Implemented WAV writer in [../src/audio/wav.rs](../src/audio/wav.rs) for 16-bit PCM input.
+- Added integration coverage in [../tests/wav_pipeline.rs](../tests/wav_pipeline.rs).
+
+Coverage notes:
+- Added unit tests for WAV byte rendering, sample roundtrip, and input validation.
+- Added end-to-end file write/read test using hound reader verification.
+
+## M4 Audio Output Pipeline (FLAC slice)
+
+Completed subtopic:
+- Implemented FLAC writer in [../src/audio/flac.rs](../src/audio/flac.rs) using native Rust flacenc.
+- Reused shared PCM input model in [../src/audio/mod.rs](../src/audio/mod.rs) for WAV/FLAC parity.
+- Added end-to-end FLAC integration coverage in [../tests/flac_pipeline.rs](../tests/flac_pipeline.rs).
+
+Coverage notes:
+- Added unit tests for FLAC byte rendering, stream decode roundtrip, and input validation.
+- Added end-to-end file write/read test using claxon decoder verification.

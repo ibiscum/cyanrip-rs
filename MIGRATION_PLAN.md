@@ -106,12 +106,12 @@ Exit criteria:
 
 ### M4 - Audio output pipeline (native Rust first)
 
-Status: [ ]
+Status: [~]
 
 Checklist:
-- [ ] Introduce PCM frame model and processing pipeline interfaces.
-- [ ] Implement WAV output path.
-- [ ] Implement FLAC output path.
+- [x] Introduce PCM frame model and processing pipeline interfaces.
+- [x] Implement WAV output path.
+- [x] Implement FLAC output path.
 - [ ] Add per-track writer flow with metadata embedding where supported.
 - [ ] Keep unsupported codecs behind explicit feature flags or deferred list.
 

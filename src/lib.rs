@@ -3,6 +3,7 @@ pub const MAX_OUTPUTS: usize = 32;
 pub const MAX_PARANOIA_LEVEL: i32 = 3;
 const CD_FRAMESIZE_RAW_DIV4: i32 = 588;
 
+pub mod audio;
 pub mod app;
 pub mod cli;
 pub mod cue;

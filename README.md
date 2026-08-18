@@ -18,3 +18,13 @@ For every PR, update docs as part of the same change set:
 7. If priorities shift, update [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md).
 
 PRs that modify behavior without corresponding doc updates should be considered incomplete.
+
+## Licensing
+
+- Project license: LGPL-2.1-or-later (see [LICENSE](LICENSE)).
+- Upstream attribution and notice handling: [UPSTREAM_NOTICES.md](UPSTREAM_NOTICES.md).
+- Third-party dependency license inventory: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- Bundled common dependency license texts:
+	- [licenses/Apache-2.0.txt](licenses/Apache-2.0.txt)
+	- [licenses/MIT.txt](licenses/MIT.txt)
+	- [licenses/ISC.txt](licenses/ISC.txt)

@@ -46,5 +46,19 @@
 - Evaluated libarcstk/arcstk/accurip crates on crates.io; no directly reusable Rust binding crate available in this environment, so native Rust implementation remains in-tree.
 - Added app-level metadata flow orchestration in [../src/app.rs](../src/app.rs) with deterministic order and fallback behavior tests.
 
+### M4 Start
+- Added audio module scaffold in [../src/audio/mod.rs](../src/audio/mod.rs).
+- Implemented WAV output writer in [../src/audio/wav.rs](../src/audio/wav.rs) using hound.
+- Added WAV end-to-end integration test in [../tests/wav_pipeline.rs](../tests/wav_pipeline.rs).
+- Implemented FLAC output writer in [../src/audio/flac.rs](../src/audio/flac.rs) using flacenc.
+- Added FLAC end-to-end integration test in [../tests/flac_pipeline.rs](../tests/flac_pipeline.rs) using claxon for decode verification.
+
 ### Validation
 - Test suite passing after each major change set (cargo test).
+
+### Licensing and Compliance
+- Re-licensed repository to LGPL-2.1-or-later and replaced top-level [../LICENSE](../LICENSE) text accordingly.
+- Added SPDX license metadata in [../Cargo.toml](../Cargo.toml).
+- Added upstream attribution/notice guidance in [../UPSTREAM_NOTICES.md](../UPSTREAM_NOTICES.md).
+- Added dependency license inventory in [../THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+- Added bundled common license texts in [../licenses/Apache-2.0.txt](../licenses/Apache-2.0.txt), [../licenses/MIT.txt](../licenses/MIT.txt), and [../licenses/ISC.txt](../licenses/ISC.txt).

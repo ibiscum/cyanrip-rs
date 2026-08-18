@@ -40,7 +40,9 @@ Source baseline is /cyanrip/src.
 | Cover art retrieval | coverart.c | Cover Art Archive querying/downloading and selection policy | src/metadata/coverart.rs | Done (core rules) | Yes |
 | AccurateRip lookup | accurip.c | AR DB download and checksum confidence matching | src/metadata/accurip.rs | Done (core rules) | Yes |
 | Metadata flow orchestration | cyanrip_main.c + metadata modules | DiscID -> MB -> cover art -> AccurateRip ordering with disable/fallback behavior | src/app.rs | Done (core rules) | Yes |
-| Encoder pipeline | cyanrip_encode.c | decode/filter/encode/write pipeline | src/audio/* | Planned | No |
+| Encoder pipeline | cyanrip_encode.c | decode/filter/encode/write pipeline | src/audio/* | In progress (WAV+FLAC core paths) | Yes (WAV+FLAC) |
+| WAV writer | cyanrip_encode.c | write PCM samples to RIFF/WAVE container | src/audio/wav.rs | Done (core rules) | Yes |
+| FLAC writer | cyanrip_encode.c | write PCM samples to FLAC stream/container | src/audio/flac.rs | Done (core rules) | Yes |
 | FIFO frame/packet queues | fifo_frame.c + fifo_packet.c | thread-safe producer-consumer queues | src/audio/queue.rs | Planned | No |
 | CD image + drive access | cyanrip_main.c + libcdio/paranoia | media read, retries, hot-remove checks | src/cdda/* | Planned | No |
 | ReplayGain and EBU R128 | cyanrip_main.c + cyanrip_encode.c | album/track loudness metadata computation | src/audio/replaygain.rs | Deferred | No |
@@ -49,11 +51,11 @@ Source baseline is /cyanrip/src.
 ## Current Gap Summary
 
 - Implemented and test-covered: core settings and validation logic from CLI/control path plus deterministic naming/cue/log/checksum modules, all M3 metadata core modules, and metadata-flow orchestration.
-- Major gaps: audio pipeline and CD I/O layer.
+- Major gaps: broader audio pipeline wiring (per-track flow, metadata embedding), and CD I/O layer.
 - Deferred explicitly: full codec parity and replaygain implementation details until core end-to-end path is stable.
 
 ## Immediate Next Slice
 
-1. Begin M4 audio output pipeline with WAV path first.
+1. Add per-track writer flow and output dispatch wiring for WAV/FLAC.
 2. Add app-path integration tests that connect CLI settings to metadata orchestration entrypoints.
 3. Keep error semantics aligned to this parity matrix and update statuses as features land.
