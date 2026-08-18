@@ -6,6 +6,7 @@ const CD_FRAMESIZE_RAW_DIV4: i32 = 588;
 pub mod cli;
 pub mod cue;
 pub mod fun512;
+pub mod log_report;
 pub mod naming;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

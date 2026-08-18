@@ -61,13 +61,13 @@ Exit criteria:
 
 ### M2 - Deterministic core modules
 
-Status: [ ]
+Status: [x]
 
 Checklist:
-- [ ] Port naming and sanitation rules from naming.c.
-- [ ] Port cue writer behavior from cue_writer.c.
-- [ ] Port FUN512 and checksum logic from fun512.c and checksums.h path.
-- [ ] Port logging text formatting behavior from cyanrip_log.c where deterministic.
+- [x] Port naming and sanitation rules from naming.c.
+- [x] Port cue writer behavior from cue_writer.c.
+- [x] Port FUN512 and checksum logic from fun512.c and checksums.h path.
+- [x] Port logging text formatting behavior from cyanrip_log.c where deterministic.
 
 Suggested crates:
 - sha2
