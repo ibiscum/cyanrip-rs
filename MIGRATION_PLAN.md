@@ -14,6 +14,7 @@ This document is the implementation roadmap for porting to Rust in phases, using
 - Base crate exists in this repository.
 - Initial core parsing and validation logic has been ported with unit tests.
 - No end-to-end ripping flow yet.
+- Paranoia-mode rip control state machine is now scaffolded in Rust with regression tests; CDDA frame I/O wiring is still pending.
 
 ## Milestone Checklist
 
@@ -112,7 +113,9 @@ Checklist:
 - [x] Introduce PCM frame model and processing pipeline interfaces.
 - [x] Implement WAV output path.
 - [x] Implement FLAC output path.
-- [ ] Add per-track writer flow with metadata embedding where supported.
+- [x] Add per-track writer flow and output dispatch for WAV/FLAC.
+- [x] Add metadata embedding for FLAC tags (Vorbis comments).
+- [ ] Add metadata embedding for additional codecs as implemented.
 - [ ] Keep unsupported codecs behind explicit feature flags or deferred list.
 
 Suggested crates:
@@ -129,13 +132,20 @@ Exit criteria:
 Status: [ ]
 
 Checklist:
-- [ ] Define Rust traits for drive/media/frame read operations.
-- [ ] Implement image-backed reader for deterministic CI testing.
+- [x] Add a deterministic paranoia-mode rip state machine model (retry, abort, finalize transitions).
+- [x] Define Rust traits for drive/media/frame read operations.
+- [x] Implement image-backed reader for deterministic CI testing.
 - [ ] Port offset and overread policy logic to Rust.
-- [ ] Add synthetic/fault-injection tests for retry behavior.
+- [x] Add synthetic/fault-injection tests for retry behavior.
+
+Suggested crates:
+- cdrtoc (TOC/image metadata parsing)
+- thiserror (backend error surface)
+- tokio (optional async backend adapters)
 
 Exit criteria:
 - Image-based reads and policy behavior are testable and stable.
+- Paranoia state transitions are covered by regression tests and reusable by both image and physical backends.
 
 ---
 
@@ -145,12 +155,18 @@ Status: [ ]
 
 Checklist:
 - [ ] Implement Linux physical drive backend.
-- [ ] Port/replicate paranoia-like overlap/verify/retry heuristics.
+- [ ] Wire the Rust paranoia state machine to real frame reads, retries, and encoder flush transitions.
+- [ ] Port/replicate paranoia-like overlap/verify/retry heuristics and callback counters.
 - [ ] Add media-changed and interruption handling.
 - [ ] Validate practical ripping behavior on real hardware.
 
+Suggested crates:
+- nix (Linux ioctl and descriptor safety)
+- libc (minimal FFI shims where no higher-level Rust crate exists)
+
 Exit criteria:
 - Real-drive ripping works with acceptable reliability.
+- Real-drive runs demonstrate parity for retry/abort/finalize behavior under induced read-failure scenarios.
 
 ---
 
@@ -210,8 +226,10 @@ Exit criteria:
 - [ ] Defer unsupported formats with explicit errors.
 
 6. Implement M5 and M6
+- [x] Add paranoia state machine scaffold and regression tests.
 - [ ] Build image-reader backend for CI.
 - [ ] Add physical-reader backend behind cfg(target_os = "linux").
+- [ ] Integrate state machine events into read/decode/encode loop.
 
 7. Complete M7
 - [ ] Differential output comparison harness.
@@ -224,6 +242,7 @@ Exit criteria:
 - Integration tests for metadata modules with mocked services.
 - End-to-end tests using local image fixtures.
 - Differential tests against the C binary for selected scenarios.
+- State-machine regression tests for paranoia transitions (retry loops, media-change abort, retry-limit finalize).
 
 ## Risk and Mitigation
 

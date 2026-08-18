@@ -1,12 +1,18 @@
 use async_trait::async_trait;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
+use crate::audio::flac::write_flac_file;
+use crate::audio::wav::write_wav_file;
+use crate::audio::PcmTrackData;
 use crate::metadata::accurip::{
     AccuDbStatus, AccuRipError, AccuRipLookupResult, AccuRipService, AccuRipTrackInput,
 };
 use crate::metadata::coverart::{CoverArtError, CoverArtImage, CoverArtService};
 use crate::metadata::discid::{DiscTrack, DiscidInfo, compute_discid};
 use crate::metadata::musicbrainz::{MusicBrainzError, MusicBrainzReleaseMeta, MusicBrainzService};
-use crate::{ReleaseSelection, Settings};
+use crate::naming::{NamingContext, build_track_relative_path};
+use crate::{OutputFormat, ReleaseSelection, Settings};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppTrack {
@@ -268,11 +274,245 @@ where
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackOutputInput {
+    pub track_number: u32,
+    pub track_meta: HashMap<String, String>,
+    pub pcm: PcmTrackData,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackOutputFlowInput {
+    pub settings: Settings,
+    pub output_root: PathBuf,
+    pub album_meta: HashMap<String, String>,
+    pub tracks: Vec<TrackOutputInput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackOutputFile {
+    pub track_number: u32,
+    pub output_format: OutputFormat,
+    pub relative_path: PathBuf,
+    pub absolute_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackOutputFlowResult {
+    pub written_files: Vec<TrackOutputFile>,
+}
+
+#[derive(Debug)]
+pub enum TrackOutputFlowError {
+    UnsupportedOutputFormat(OutputFormat),
+    Naming(String),
+    Io(std::io::Error),
+    Tagging {
+        output_format: OutputFormat,
+        path: PathBuf,
+        message: String,
+    },
+    Encode {
+        output_format: OutputFormat,
+        path: PathBuf,
+        message: String,
+    },
+}
+
+impl std::fmt::Display for TrackOutputFlowError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedOutputFormat(fmt_kind) => {
+                write!(f, "output format {fmt_kind:?} is not yet implemented")
+            }
+            Self::Naming(msg) => write!(f, "naming error: {msg}"),
+            Self::Io(err) => write!(f, "io error: {err}"),
+            Self::Tagging {
+                output_format,
+                path,
+                message,
+            } => write!(
+                f,
+                "tagging error for {output_format:?} at {}: {message}",
+                path.display()
+            ),
+            Self::Encode {
+                output_format,
+                path,
+                message,
+            } => write!(
+                f,
+                "encode error for {output_format:?} at {}: {message}",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TrackOutputFlowError {}
+
+impl From<std::io::Error> for TrackOutputFlowError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+fn output_format_descriptor(fmt_kind: OutputFormat) -> Option<(&'static str, &'static str)> {
+    match fmt_kind {
+        OutputFormat::Wav => Some(("WAV", "wav")),
+        OutputFormat::Flac => Some(("FLAC", "flac")),
+        _ => None,
+    }
+}
+
+fn canonical_flac_vorbis_key(input: &str) -> String {
+    match input {
+        "track" | "tracknumber" => "TRACKNUMBER".to_string(),
+        "disc" | "discnumber" => "DISCNUMBER".to_string(),
+        "totaldiscs" | "disctotal" => "DISCTOTAL".to_string(),
+        "album_artist" => "ALBUMARTIST".to_string(),
+        "musicbrainz_albumid" => "MUSICBRAINZ_ALBUMID".to_string(),
+        "musicbrainz_discid" => "MUSICBRAINZ_DISCID".to_string(),
+        _ => input.to_ascii_uppercase(),
+    }
+}
+
+fn build_flac_comment_map(
+    settings: &Settings,
+    album_meta: &HashMap<String, String>,
+    track: &TrackOutputInput,
+) -> HashMap<String, String> {
+    let mut merged = HashMap::new();
+
+    for (key, value) in album_meta {
+        if value.is_empty() {
+            continue;
+        }
+        merged.insert(canonical_flac_vorbis_key(key), value.clone());
+    }
+
+    for (key, value) in &track.track_meta {
+        if value.is_empty() {
+            continue;
+        }
+        merged.insert(canonical_flac_vorbis_key(key), value.clone());
+    }
+
+    merged
+        .entry("TRACKNUMBER".to_string())
+        .or_insert_with(|| track.track_number.to_string());
+
+    if settings.discnumber > 0 {
+        merged
+            .entry("DISCNUMBER".to_string())
+            .or_insert_with(|| settings.discnumber.to_string());
+    }
+    if settings.totaldiscs > 0 {
+        merged
+            .entry("DISCTOTAL".to_string())
+            .or_insert_with(|| settings.totaldiscs.to_string());
+    }
+
+    merged
+}
+
+fn embed_flac_vorbis_comments(
+    path: &Path,
+    comments: &HashMap<String, String>,
+) -> Result<(), TrackOutputFlowError> {
+    let mut tag = metaflac::Tag::read_from_path(path).map_err(|e| TrackOutputFlowError::Tagging {
+        output_format: OutputFormat::Flac,
+        path: path.to_path_buf(),
+        message: e.to_string(),
+    })?;
+
+    for (key, value) in comments {
+        tag.set_vorbis(key, vec![value]);
+    }
+
+    tag.save().map_err(|e| TrackOutputFlowError::Tagging {
+        output_format: OutputFormat::Flac,
+        path: path.to_path_buf(),
+        message: e.to_string(),
+    })
+}
+
+pub fn write_track_outputs(input: TrackOutputFlowInput) -> Result<TrackOutputFlowResult, TrackOutputFlowError> {
+    let naming_ctx = NamingContext {
+        sanitize_method: input.settings.sanitize_method,
+        nb_tracks: input.tracks.len(),
+    };
+
+    let mut written_files = Vec::new();
+    for fmt_kind in &input.settings.outputs {
+        let (format_suffix, extension) = output_format_descriptor(*fmt_kind)
+            .ok_or(TrackOutputFlowError::UnsupportedOutputFormat(*fmt_kind))?;
+
+        for track in &input.tracks {
+            let relative_path_str = build_track_relative_path(
+                &naming_ctx,
+                &input.album_meta,
+                &track.track_meta,
+                &input.settings.folder_name_scheme,
+                &input.settings.track_name_scheme,
+                format_suffix,
+                extension,
+            )
+            .map_err(TrackOutputFlowError::Naming)?;
+
+            let relative_path = PathBuf::from(relative_path_str);
+            let absolute_path = input.output_root.join(&relative_path);
+
+            if let Some(parent) = absolute_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            match fmt_kind {
+                OutputFormat::Wav => write_wav_file(&absolute_path, &track.pcm).map_err(|e| {
+                    TrackOutputFlowError::Encode {
+                        output_format: *fmt_kind,
+                        path: absolute_path.clone(),
+                        message: e.to_string(),
+                    }
+                })?,
+                OutputFormat::Flac => {
+                    write_flac_file(&absolute_path, &track.pcm).map_err(|e| {
+                        TrackOutputFlowError::Encode {
+                            output_format: *fmt_kind,
+                            path: absolute_path.clone(),
+                            message: e.to_string(),
+                        }
+                    })?;
+
+                    let comments = build_flac_comment_map(&input.settings, &input.album_meta, track);
+                    embed_flac_vorbis_comments(&absolute_path, &comments)?;
+                }
+                _ => {
+                    return Err(TrackOutputFlowError::UnsupportedOutputFormat(*fmt_kind));
+                }
+            }
+
+            written_files.push(TrackOutputFile {
+                track_number: track.track_number,
+                output_format: *fmt_kind,
+                relative_path,
+                absolute_path,
+            });
+        }
+    }
+
+    Ok(TrackOutputFlowResult { written_files })
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+    use crate::audio::{PcmSpec, PcmTrackData};
     use crate::CoverArtLookupSize;
     use crate::metadata::accurip::{AccuRipDiscIds, AccuRipTrackMatches};
 
@@ -405,6 +645,43 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn unique_temp_output_root() -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("cyanrip-rs-output-dispatch-{now}"))
+    }
+
+    fn sample_pcm() -> PcmTrackData {
+        PcmTrackData {
+            spec: PcmSpec {
+                channels: 1,
+                sample_rate: 48_000,
+                bits_per_sample: 16,
+            },
+            interleaved_i16_samples: vec![
+                0, 10, -10, 300, -300, 1200, -1200, 50, -50, 75, -75, 90, -90, 110, -110, 130,
+                -130,
+            ],
+        }
+    }
+
+    fn track_meta(track: &str, title: &str) -> HashMap<String, String> {
+        [
+            ("track".to_string(), track.to_string()),
+            ("title".to_string(), title.to_string()),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    fn first_vorbis_value(tag: &metaflac::Tag, key: &str) -> Option<String> {
+        tag.get_vorbis(key)
+            .and_then(|values| values.into_iter().next())
+            .map(ToString::to_string)
     }
 
     #[tokio::test]
@@ -554,5 +831,116 @@ mod tests {
         assert_eq!(*mb.called.lock().expect("lock"), 0);
         assert_eq!(*ar.called.lock().expect("lock"), 0);
         assert_eq!(*cover.called.lock().expect("lock"), 1);
+    }
+
+    #[test]
+    fn writes_per_track_outputs_for_wav_and_flac() {
+        let output_root = unique_temp_output_root();
+
+        let mut settings = Settings::default();
+        settings.outputs = vec![OutputFormat::Wav, OutputFormat::Flac];
+        settings.folder_name_scheme = "{album} [{format}]".to_string();
+        settings.track_name_scheme = "{track} - {title}".to_string();
+        settings.discnumber = 1;
+        settings.totaldiscs = 2;
+
+        let album_meta: HashMap<String, String> = [
+            ("album".to_string(), "Example Album".to_string()),
+            ("album_artist".to_string(), "Example Artist".to_string()),
+            ("date".to_string(), "2024-01-01".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let tracks = vec![
+            TrackOutputInput {
+                track_number: 1,
+                track_meta: [
+                    ("track".to_string(), "01".to_string()),
+                    ("title".to_string(), "Intro".to_string()),
+                    ("artist".to_string(), "Track Artist".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+                pcm: sample_pcm(),
+            },
+            TrackOutputInput {
+                track_number: 2,
+                track_meta: track_meta("02", "Outro"),
+                pcm: sample_pcm(),
+            },
+        ];
+
+        let result = write_track_outputs(TrackOutputFlowInput {
+            settings,
+            output_root: output_root.clone(),
+            album_meta,
+            tracks,
+        })
+        .expect("dispatch should write wav and flac outputs");
+
+        assert_eq!(result.written_files.len(), 4);
+
+        let expected_paths = vec![
+            output_root.join("Example Album [WAV]/01 - Intro.wav"),
+            output_root.join("Example Album [WAV]/02 - Outro.wav"),
+            output_root.join("Example Album [FLAC]/01 - Intro.flac"),
+            output_root.join("Example Album [FLAC]/02 - Outro.flac"),
+        ];
+
+        for p in expected_paths {
+            assert!(p.exists(), "expected output path to exist: {}", p.display());
+        }
+
+        let flac_tag =
+            metaflac::Tag::read_from_path(output_root.join("Example Album [FLAC]/01 - Intro.flac"))
+                .expect("flac tags should be readable");
+        assert_eq!(first_vorbis_value(&flac_tag, "ALBUM").as_deref(), Some("Example Album"));
+        assert_eq!(
+            first_vorbis_value(&flac_tag, "ALBUMARTIST").as_deref(),
+            Some("Example Artist")
+        );
+        assert_eq!(
+            first_vorbis_value(&flac_tag, "ARTIST").as_deref(),
+            Some("Track Artist")
+        );
+        assert_eq!(first_vorbis_value(&flac_tag, "TITLE").as_deref(), Some("Intro"));
+        assert_eq!(first_vorbis_value(&flac_tag, "TRACKNUMBER").as_deref(), Some("01"));
+        assert_eq!(first_vorbis_value(&flac_tag, "DISCNUMBER").as_deref(), Some("1"));
+        assert_eq!(first_vorbis_value(&flac_tag, "DISCTOTAL").as_deref(), Some("2"));
+
+        let cleanup = std::fs::remove_dir_all(&output_root);
+        assert!(cleanup.is_ok(), "temporary output root should be removable");
+    }
+
+    #[test]
+    fn rejects_unsupported_output_formats_in_dispatch() {
+        let output_root = unique_temp_output_root();
+
+        let mut settings = Settings::default();
+        settings.outputs = vec![OutputFormat::Mp3];
+
+        let album_meta: HashMap<String, String> = [("album".to_string(), "Example Album".to_string())]
+            .into_iter()
+            .collect();
+
+        let tracks = vec![TrackOutputInput {
+            track_number: 1,
+            track_meta: track_meta("01", "Intro"),
+            pcm: sample_pcm(),
+        }];
+
+        let err = write_track_outputs(TrackOutputFlowInput {
+            settings,
+            output_root,
+            album_meta,
+            tracks,
+        })
+        .expect_err("unsupported format should error");
+
+        assert!(matches!(
+            err,
+            TrackOutputFlowError::UnsupportedOutputFormat(OutputFormat::Mp3)
+        ));
     }
 }

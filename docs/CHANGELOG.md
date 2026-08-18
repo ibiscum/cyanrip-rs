@@ -52,6 +52,21 @@
 - Added WAV end-to-end integration test in [../tests/wav_pipeline.rs](../tests/wav_pipeline.rs).
 - Implemented FLAC output writer in [../src/audio/flac.rs](../src/audio/flac.rs) using flacenc.
 - Added FLAC end-to-end integration test in [../tests/flac_pipeline.rs](../tests/flac_pipeline.rs) using claxon for decode verification.
+- Implemented app-level per-track output dispatch in [../src/app.rs](../src/app.rs) so selected output formats drive concrete WAV/FLAC file emission.
+- Added dispatch tests for successful per-track output writes and unsupported-format error paths.
+- Implemented FLAC Vorbis-comment metadata embedding in [../src/app.rs](../src/app.rs) using metaflac, aligned with C metadata propagation behavior.
+- Added app-level tests validating embedded FLAC tag fields for album/track/disc metadata.
+- Added CLI-to-app integration tests in [../tests/app_cli_integration.rs](../tests/app_cli_integration.rs) that validate orchestration disable-flag behavior and CLI-driven output dispatch/tag propagation.
+
+### M5 Paranoia Control Path Start
+- Added CDDA paranoia state-machine scaffolding in [../src/cdda/paranoia.rs](../src/cdda/paranoia.rs).
+- Added regression tests for retry-loop transitions, retry-limit finalize behavior, media-change abort handling, and fatal pipeline error handling.
+- Updated roadmap and parity planning docs to include explicit milestones for wiring paranoia control logic into image-backed and physical-drive readers.
+
+### M5 Reader Runtime Integration
+- Added CDDA reader trait and paranoia-oriented track runner in [../src/cdda/reader.rs](../src/cdda/reader.rs).
+- Added image-backed fake reader with injected read-failure and media-change behaviors for deterministic fault-injection tests.
+- Added Cargo features for cdda/paranoia availability and backend planning flags (including libcdio-sys and a libcdio-rs planning feature) in [../Cargo.toml](../Cargo.toml).
 
 ### Validation
 - Test suite passing after each major change set (cargo test).
