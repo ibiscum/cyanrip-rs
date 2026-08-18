@@ -35,10 +35,11 @@ Source baseline is /home/ulf/data/cyanrip/src.
 | CUE writer | cue_writer.c | CUE generation and track mapping details | src/cue.rs | Done (core rules) | Yes |
 | Log formatter | cyanrip_log.c | report formatting, status lines, checksum sections | src/log_report.rs | Done (deterministic sections) | Yes |
 | FUN512 | fun512.c | SHA-512 + base64 marker digest for logs | src/fun512.rs | Done (core rules) | Yes |
-| Disc ID generation | discid.c | MusicBrainz disc id and related tags | src/metadata/discid.rs | Planned | No |
-| MusicBrainz metadata | musicbrainz.c | release lookup and metadata mapping | src/metadata/musicbrainz.rs | Planned | No |
-| Cover art retrieval | coverart.c | Cover Art Archive querying/downloading | src/metadata/coverart.rs | Planned | No |
-| AccurateRip lookup | accurip.c | AR DB download and checksum confidence matching | src/metadata/accurip.rs | Planned | No |
+| Disc ID generation | discid.c | MusicBrainz disc id, CDDB, and submission TOC URL generation | src/metadata/discid.rs | Done (core rules) | Yes |
+| MusicBrainz metadata | musicbrainz.c | release lookup, selection semantics, and metadata mapping | src/metadata/musicbrainz.rs | Done (core rules) | Yes |
+| Cover art retrieval | coverart.c | Cover Art Archive querying/downloading and selection policy | src/metadata/coverart.rs | Done (core rules) | Yes |
+| AccurateRip lookup | accurip.c | AR DB download and checksum confidence matching | src/metadata/accurip.rs | Done (core rules) | Yes |
+| Metadata flow orchestration | cyanrip_main.c + metadata modules | DiscID -> MB -> cover art -> AccurateRip ordering with disable/fallback behavior | src/app.rs | Done (core rules) | Yes |
 | Encoder pipeline | cyanrip_encode.c | decode/filter/encode/write pipeline | src/audio/* | Planned | No |
 | FIFO frame/packet queues | fifo_frame.c + fifo_packet.c | thread-safe producer-consumer queues | src/audio/queue.rs | Planned | No |
 | CD image + drive access | cyanrip_main.c + libcdio/paranoia | media read, retries, hot-remove checks | src/cdda/* | Planned | No |
@@ -47,12 +48,12 @@ Source baseline is /home/ulf/data/cyanrip/src.
 
 ## Current Gap Summary
 
-- Implemented and test-covered: core settings and validation logic from CLI/control path plus deterministic naming/cue/log/checksum modules.
-- Major gaps: metadata/network modules, audio pipeline, and CD I/O layer.
+- Implemented and test-covered: core settings and validation logic from CLI/control path plus deterministic naming/cue/log/checksum modules, all M3 metadata core modules, and metadata-flow orchestration.
+- Major gaps: audio pipeline and CD I/O layer.
 - Deferred explicitly: full codec parity and replaygain implementation details until core end-to-end path is stable.
 
 ## Immediate Next Slice
 
-1. Begin M3 discid flow port with mocked I/O seams.
-2. Implement MusicBrainz lookup/mapping with regression fixtures.
+1. Begin M4 audio output pipeline with WAV path first.
+2. Add app-path integration tests that connect CLI settings to metadata orchestration entrypoints.
 3. Keep error semantics aligned to this parity matrix and update statuses as features land.
