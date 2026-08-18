@@ -1,0 +1,168 @@
+{
+  "id": "TESTDISC",
+  "offset-count": 2,
+  "sectors": 30000,
+  "offsets": [150, 15150],
+  "releases": [
+    {
+      "id": "rel-1",
+      "title": "Album One",
+      "status": "Official",
+      "date": "2001-01-01",
+      "country": "US",
+      "disambiguation": "first press",
+      "media": [
+        {
+          "id": "med-1",
+          "position": 1,
+          "track-count": 1,
+          "format": "CD",
+          "discs": [
+            {
+              "id": "TESTDISC",
+              "offset-count": 2,
+              "sectors": 30000,
+              "offsets": [150, 15150]
+            }
+          ],
+          "tracks": [
+            {
+              "id": "trk-11",
+              "title": "T1",
+              "number": "1",
+              "position": 1,
+              "recording": {
+                "id": "rec-11",
+                "title": "T1"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rel-2",
+      "title": "Album Two",
+      "status": "Official",
+      "date": "2024-06-21",
+      "country": "GB",
+      "barcode": "1234567890123",
+      "disambiguation": "remaster",
+      "packaging": "Jewel Case",
+      "artist-credit": [
+        {
+          "name": "The Artist",
+          "joinphrase": " feat. ",
+          "artist": {
+            "id": "art-1",
+            "name": "The Artist",
+            "sort-name": "Artist, The",
+            "disambiguation": ""
+          }
+        },
+        {
+          "name": "Guest",
+          "artist": {
+            "id": "art-2",
+            "name": "Guest",
+            "sort-name": "Guest",
+            "disambiguation": ""
+          }
+        }
+      ],
+      "label-info": [
+        {
+          "catalog-number": "CAT-002",
+          "label": {
+            "id": "lab-1",
+            "name": "LabelCo"
+          }
+        }
+      ],
+      "media": [
+        {
+          "id": "med-21",
+          "position": 1,
+          "title": "Main Disc",
+          "track-count": 1,
+          "format": "CD",
+          "discs": [
+            {
+              "id": "OTHERDISC",
+              "offset-count": 2,
+              "sectors": 28000,
+              "offsets": [150, 14000]
+            }
+          ],
+          "tracks": [
+            {
+              "id": "trk-21a",
+              "title": "Ignore Me",
+              "number": "1",
+              "position": 1,
+              "recording": {
+                "id": "rec-21a",
+                "title": "Ignore Me"
+              }
+            }
+          ]
+        },
+        {
+          "id": "med-22",
+          "position": 2,
+          "title": "Bonus Disc",
+          "track-count": 2,
+          "format": "CD",
+          "discs": [
+            {
+              "id": "TESTDISC",
+              "offset-count": 2,
+              "sectors": 30000,
+              "offsets": [150, 15150]
+            }
+          ],
+          "tracks": [
+            {
+              "id": "trk-21",
+              "title": "Track Title Should Be Overridden",
+              "number": "1",
+              "position": 1,
+              "recording": {
+                "id": "rec-21",
+                "title": "Song A",
+                "artist-credit": [
+                  {
+                    "name": "Track Artist",
+                    "artist": {
+                      "id": "art-3",
+                      "name": "Track Artist",
+                      "sort-name": "Artist, Track",
+                      "disambiguation": ""
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "trk-22",
+              "title": "Fallback Title",
+              "number": "2",
+              "position": 2,
+              "artist-credit": [
+                {
+                  "name": "Track Fallback Artist",
+                  "artist": {
+                    "id": "art-4",
+                    "name": "Track Fallback Artist",
+                    "sort-name": "Artist, Fallback",
+                    "disambiguation": ""
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

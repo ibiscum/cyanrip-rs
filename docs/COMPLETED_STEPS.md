@@ -64,3 +64,30 @@ Key file:
 Coverage notes:
 - Added snapshot-style fixtures for deterministic start and finish report rendering.
 - Added deterministic checksum parity tests for first/last-track windows and chunked input processing.
+
+## M3 Metadata Services (in progress)
+
+Completed subtopic:
+- Metadata module scaffolding created under src/metadata.
+- DiscID flow core rules ported from discid.c (MusicBrainz DiscID, CDDB, submission TOC URL).
+- MusicBrainz lookup and release/track metadata mapping core rules ported from musicbrainz.c.
+- Cover art lookup/download core behavior ported from coverart.c.
+- AccurateRip lookup and binary parser core behavior ported from accurip.c.
+
+Key files:
+- [../src/metadata/mod.rs](../src/metadata/mod.rs)
+- [../src/metadata/discid.rs](../src/metadata/discid.rs)
+- [../src/metadata/musicbrainz.rs](../src/metadata/musicbrainz.rs)
+- [../src/metadata/coverart.rs](../src/metadata/coverart.rs)
+- [../src/metadata/accurip.rs](../src/metadata/accurip.rs)
+
+Coverage notes:
+- Added deterministic vector tests for DiscID/CDDB/TOC output and invalid-input behavior.
+- Added wiremock-backed fixture tests for release lookup, selection behavior, not-found handling, and track metadata mapping.
+- Added wiremock-backed cover art tests for DB lookup policy, URL hydration, and C-compatible front/back selection behavior.
+- Added deterministic AccurateRip fixture-blob parser tests and wiremock lookup tests (404, html-not-found heuristic, valid binary payload).
+
+### Metadata flow orchestration
+- Added app-level metadata pipeline orchestration in [../src/app.rs](../src/app.rs).
+- Flow order implemented and tested: DiscID -> MusicBrainz -> Cover Art -> AccurateRip.
+- Added parity-focused tests for disable flags and fallback behavior when upstream metadata fails.

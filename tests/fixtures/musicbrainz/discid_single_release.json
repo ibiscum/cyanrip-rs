@@ -1,0 +1,41 @@
+{
+  "id": "TESTDISC",
+  "offset-count": 1,
+  "sectors": 20000,
+  "offsets": [150],
+  "releases": [
+    {
+      "id": "rel-single",
+      "title": "Single Release",
+      "status": "Official",
+      "media": [
+        {
+          "id": "med-single",
+          "position": 1,
+          "track-count": 1,
+          "format": "CD",
+          "discs": [
+            {
+              "id": "TESTDISC",
+              "offset-count": 1,
+              "sectors": 20000,
+              "offsets": [150]
+            }
+          ],
+          "tracks": [
+            {
+              "id": "trk-single",
+              "title": "Only Track",
+              "number": "1",
+              "position": 1,
+              "recording": {
+                "id": "rec-single",
+                "title": "Only Track"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

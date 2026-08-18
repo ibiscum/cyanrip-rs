@@ -83,13 +83,13 @@ Exit criteria:
 
 ### M3 - Metadata services
 
-Status: [ ]
+Status: [x]
 
 Checklist:
-- [ ] Port discid flow from discid.c.
-- [ ] Port MusicBrainz lookup and mapping from musicbrainz.c.
-- [ ] Port cover art lookup/download handling from coverart.c.
-- [ ] Port AccurateRip lookup and parse behavior from accurip.c.
+- [x] Port discid flow from discid.c.
+- [x] Port MusicBrainz lookup and mapping from musicbrainz.c.
+- [x] Port cover art lookup/download handling from coverart.c.
+- [x] Port AccurateRip lookup and parse behavior from accurip.c.
 
 Suggested crates:
 - reqwest
@@ -180,6 +180,7 @@ Exit criteria:
 - musicbrainz.c -> src/metadata/musicbrainz.rs
 - coverart.c -> src/metadata/coverart.rs
 - accurip.c -> src/metadata/accurip.rs
+- metadata orchestration in cyanrip_main.c flow -> src/app.rs
 - cyanrip_encode.c -> src/audio/mod.rs + format-specific modules
 - fifo_frame.c/fifo_packet.c -> src/audio/queue.rs (channel-based)
 
