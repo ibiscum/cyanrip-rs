@@ -107,6 +107,12 @@ Status update:
 - Wire Linux drive reads into the same state-machine events.
 - Add induced read-failure and interruption tests to assert parity around retries/finalization.
 
+Status update:
+- Linux physical-drive adapter implementing CddaFrameReader under cdda feature: done
+- Hardware-free backend regression tests for seek/read/media-changed mapping: done
+- Real libcdio-backed compile/test path: done
+- Real-drive hardware validation: pending on target machine setup
+
 ## After M2
 
 16. Continue parity matrix maintenance as each feature lands.

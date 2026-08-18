@@ -68,6 +68,12 @@
 - Added image-backed fake reader with injected read-failure and media-change behaviors for deterministic fault-injection tests.
 - Added Cargo features for cdda/paranoia availability and backend planning flags (including libcdio-sys and a libcdio-rs planning feature) in [../Cargo.toml](../Cargo.toml).
 
+### M6 Linux Physical-Drive Adapter (first slice)
+- Added Linux physical-drive adapter scaffold in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs) that implements the shared CDDA frame reader trait and maps media-change semantics into the same paranoia event pipeline.
+- Added backend abstraction tests for seek/read progression, read-failure propagation, media-changed mapping parity, and backend cleanup behavior without requiring hardware.
+- Added optional libcdio-sys backend wiring for real-drive reads behind feature flags.
+- Updated libcdio-sys dependency/features to a safe set that avoids UDF headers and validates with `cargo check --features "backend-libcdio-sys paranoia"` and `cargo test --features "backend-libcdio-sys paranoia"`.
+
 ### Validation
 - Test suite passing after each major change set (cargo test).
 
