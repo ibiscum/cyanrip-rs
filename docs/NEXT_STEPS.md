@@ -12,9 +12,46 @@ This list is derived from the migration roadmap and current parity state.
 - Define deterministic mapping tests before implementation.
 - Keep I/O boundaries injectable for integration tests.
 
+Status update:
+- Metadata module structure: done
+- DiscID deterministic flow and tests: done
+
+3. Port MusicBrainz lookup and mapping from musicbrainz.c.
+- Introduce injectable HTTP client trait and response decoding layer.
+- Add wiremock fixtures for release/disc lookup paths.
+
+Status update:
+- MusicBrainz lookup/mapping core: done
+- Injectable HTTP trait + wiremock fixtures: done
+
+4. Port cover art lookup/download handling from coverart.c.
+- Add metadata-to-download selection logic tests first.
+
+Status update:
+- Cover art lookup/download core: done
+- Injectable HTTP + wiremock tests: done
+
+5. Port AccurateRip lookup and parse behavior from accurip.c.
+- Add parser tests using deterministic fixture blobs.
+
+Status update:
+- AccurateRip lookup/parser core: done
+- Injectable HTTP + deterministic fixture and wiremock tests: done
+
+6. Integrate metadata flow orchestration in app path.
+- Wire DiscID -> MusicBrainz -> Cover Art -> AccurateRip in deterministic order.
+- Keep disable flags and fallback behavior parity.
+
+Status update:
+- Metadata orchestration module in app path: done
+- Disable-flag and fallback flow tests: done
+
+7. Start M4 audio output pipeline.
+- Implement WAV output path first with integration tests.
+
 ## After M2
 
-3. Continue parity matrix maintenance as each feature lands.
+8. Continue parity matrix maintenance as each feature lands.
 - Update statuses in [../PARITY_MATRIX.md](../PARITY_MATRIX.md).
 - Record accepted differences in [PARITY_NOTES.md](PARITY_NOTES.md).
 

@@ -3,10 +3,12 @@ pub const MAX_OUTPUTS: usize = 32;
 pub const MAX_PARANOIA_LEVEL: i32 = 3;
 const CD_FRAMESIZE_RAW_DIV4: i32 = 588;
 
+pub mod app;
 pub mod cli;
 pub mod cue;
 pub mod fun512;
 pub mod log_report;
+pub mod metadata;
 pub mod naming;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

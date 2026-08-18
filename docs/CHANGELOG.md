@@ -33,5 +33,18 @@
 - Expanded ChecksumCtx regression coverage for first/last-track windows and chunked processing.
 - Aligned checksum window arithmetic with C-style u32 wrapping behavior.
 
+### M3 Start
+- Added metadata module scaffolding in [../src/metadata/](../src/metadata/).
+- Ported DiscID core flow in [../src/metadata/discid.rs](../src/metadata/discid.rs).
+- Added deterministic regression vectors for MusicBrainz DiscID, CDDB ID, and submission TOC URL generation.
+- Implemented MusicBrainz lookup/mapping service in [../src/metadata/musicbrainz.rs](../src/metadata/musicbrainz.rs) with injectable HTTP client trait.
+- Added wiremock-backed fixtures and tests for release selection, not-found handling, and track metadata mapping.
+- Implemented cover art lookup/downloader service in [../src/metadata/coverart.rs](../src/metadata/coverart.rs) with injectable HTTP client trait.
+- Added wiremock-backed cover art tests and deterministic coverart fixtures.
+- Implemented AccurateRip lookup/parser service in [../src/metadata/accurip.rs](../src/metadata/accurip.rs) with injectable HTTP client trait.
+- Added deterministic AccurateRip fixture blobs and wiremock-backed lookup tests.
+- Evaluated libarcstk/arcstk/accurip crates on crates.io; no directly reusable Rust binding crate available in this environment, so native Rust implementation remains in-tree.
+- Added app-level metadata flow orchestration in [../src/app.rs](../src/app.rs) with deterministic order and fallback behavior tests.
+
 ### Validation
 - Test suite passing after each major change set (cargo test).
