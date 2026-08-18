@@ -1,0 +1,49 @@
+{
+  "append_missing_keys": [
+    {
+      "input": "Dark Side of the Moon:Pink Floyd",
+      "key1": "album=",
+      "key2": "album_artist=",
+      "expected": "album=Dark Side of the Moon:album_artist=Pink Floyd"
+    },
+    {
+      "input": "album=Kind of Blue:artist=Miles Davis",
+      "key1": "album=",
+      "key2": "album_artist=",
+      "expected": "album=Kind of Blue:artist=Miles Davis"
+    },
+    {
+      "input": "title=Speak to Me:Breathe",
+      "key1": "title=",
+      "key2": "artist=",
+      "expected": "title=Speak to Me:artist=Breathe"
+    },
+    {
+      "input": "title=Already Set:artist=Already Set",
+      "key1": "title=",
+      "key2": "artist=",
+      "expected": "title=Already Set:artist=Already Set"
+    }
+  ],
+  "is_integer": [
+    { "input": "0", "expected": true },
+    { "input": "123456", "expected": true },
+    { "input": "", "expected": false },
+    { "input": "12a", "expected": false },
+    { "input": "-1", "expected": false }
+  ],
+  "path_examples": [
+    {
+      "description": "Default folder scheme with two output formats requires {format}",
+      "folder_scheme": "{album} [{format}]",
+      "track_scheme": "{track} - {title}",
+      "meta": {
+        "album": "Example Album",
+        "track": "01",
+        "title": "Intro"
+      },
+      "format": "FLAC",
+      "expected_relative_path": "Example Album [FLAC]/01 - Intro.flac"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+REM MUSICBRAINZ_ID "kWw6x.CUEFIXTURE"
+REM DISCID "a1230bcd"
+CATALOG 0123456789012
+PERFORMER "Example Artist"
+TITLE "Example Album"
+FILE "01 - Intro.flac" WAVE
+  TRACK 01 AUDIO
+    TITLE "Intro"
+    PERFORMER "Example Artist"
+    INDEX 01 00:00:00
+FILE "02 - Outro.flac" WAVE
+  TRACK 02 AUDIO
+    TITLE "Outro"
+    PERFORMER "Example Artist"
+    INDEX 01 00:00:00
