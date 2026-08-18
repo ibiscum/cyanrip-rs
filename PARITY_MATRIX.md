@@ -30,11 +30,11 @@ Source baseline is /home/ulf/data/cyanrip/src.
 | Folder scheme rule | cyanrip_main.c | require {format} when multiple outputs | src/lib.rs validate_folder_scheme | Done | Yes |
 | Mode conflict rule | cyanrip_main.c | reject info-only and cue-only together | src/lib.rs validate_mode_combo | Done | Yes |
 | Full CLI parser | genopt.h + cyanrip_main.c | full command-line flag and value parser | src/cli.rs | Done | Yes (golden + edge cases + help layout) |
-| Name templating | naming.c | template interpolation and directory creation behavior | src/naming.rs | Planned | No |
-| Path sanitation | naming.c + os_compat.h | platform-sensitive replacement policy | src/naming.rs | Planned | No |
-| CUE writer | cue_writer.c | CUE generation and track mapping details | src/cue.rs | Planned | No |
-| Log formatter | cyanrip_log.c | report formatting, status lines, checksum sections | src/log_report.rs | Planned | No |
-| FUN512 | fun512.c | SHA-512 + base64 marker digest for logs | src/fun512.rs | Planned | No |
+| Name templating | naming.c | template interpolation and directory creation behavior | src/naming.rs | Done (core rules) | Yes |
+| Path sanitation | naming.c + os_compat.h | platform-sensitive replacement policy | src/naming.rs | Done (core rules) | Yes |
+| CUE writer | cue_writer.c | CUE generation and track mapping details | src/cue.rs | Done (core rules) | Yes |
+| Log formatter | cyanrip_log.c | report formatting, status lines, checksum sections | src/log_report.rs | Done (deterministic sections) | Yes |
+| FUN512 | fun512.c | SHA-512 + base64 marker digest for logs | src/fun512.rs | Done (core rules) | Yes |
 | Disc ID generation | discid.c | MusicBrainz disc id and related tags | src/metadata/discid.rs | Planned | No |
 | MusicBrainz metadata | musicbrainz.c | release lookup and metadata mapping | src/metadata/musicbrainz.rs | Planned | No |
 | Cover art retrieval | coverart.c | Cover Art Archive querying/downloading | src/metadata/coverart.rs | Planned | No |
@@ -47,12 +47,12 @@ Source baseline is /home/ulf/data/cyanrip/src.
 
 ## Current Gap Summary
 
-- Implemented and test-covered: core settings and validation logic from CLI/control path.
-- Major gaps: full CLI parser, naming/cue/log deterministic modules, metadata/network modules, audio pipeline, and CD I/O layer.
+- Implemented and test-covered: core settings and validation logic from CLI/control path plus deterministic naming/cue/log/checksum modules.
+- Major gaps: metadata/network modules, audio pipeline, and CD I/O layer.
 - Deferred explicitly: full codec parity and replaygain implementation details until core end-to-end path is stable.
 
 ## Immediate Next Slice
 
-1. Implement src/cli.rs with Clap and map parsed args into Settings.
-2. Add regression tests for representative valid and invalid command lines.
+1. Begin M3 discid flow port with mocked I/O seams.
+2. Implement MusicBrainz lookup/mapping with regression fixtures.
 3. Keep error semantics aligned to this parity matrix and update statuses as features land.

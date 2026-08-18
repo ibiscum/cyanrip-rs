@@ -1,0 +1,27 @@
+cyanrip 0.1.0 (abc123)
+Drive used:     PLEXTOR PX-891SAF (revision 1.00)
+System device:  /dev/sr0
+Device model:   PLEXTOR PX-891SAF
+Offset:         +6 samples
+Overread:       +1 frame
+Overread mode:  fill with silence in lead-in/lead-out
+Speed:          default (changeable)
+C2 errors:      unsupported by drive
+Paranoia level: max
+Frame retries:  10
+HDCD decoding:  disabled
+Album Art:      Front (From: coverartarchive)
+Outputs:        flac, wav
+Disc number:    1
+Total discs:    2
+Disc tracks:    12
+Tracks to rip:  1, 2, 4
+DiscID:         mb-discid-123
+Release ID:     release-xyz
+CDDB ID:        cddb-789
+Disc MCN:       0123456789012
+Album:          Example Album
+Album artist:   Example Artist
+AccurateRip:    found
+Total time:     00:42:13
+
