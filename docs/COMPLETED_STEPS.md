@@ -113,3 +113,40 @@ Completed subtopic:
 Coverage notes:
 - Added unit tests for FLAC byte rendering, stream decode roundtrip, and input validation.
 - Added end-to-end file write/read test using claxon decoder verification.
+
+## M4 Audio Output Pipeline (Per-track dispatch slice)
+
+Completed subtopic:
+- Added app-level per-track output writer flow in [../src/app.rs](../src/app.rs).
+- Implemented output dispatch by configured format for WAV and FLAC.
+- Integrated naming-based relative-path generation into file emission flow.
+
+Coverage notes:
+- Added app-level tests for per-track WAV/FLAC file emission and unsupported-format rejection behavior.
+
+## M4 Audio Output Pipeline (FLAC metadata embedding slice)
+
+Completed subtopic:
+- Added FLAC Vorbis-comment metadata embedding in app-level writer flow in [../src/app.rs](../src/app.rs).
+- Added canonical key mapping for C-style metadata keys into FLAC/Vorbis naming where required (e.g. track/disc fields).
+
+Coverage notes:
+- Added assertions that emitted FLAC files include embedded album, album artist, artist, title, track number, disc number, and disc total fields.
+
+## App-path integration tests (CLI to app entrypoints)
+
+Completed subtopic:
+- Added integration tests in [../tests/app_cli_integration.rs](../tests/app_cli_integration.rs) that start from CLI argument parsing and drive app-level entrypoints.
+- Verified CLI disable flags affect metadata orchestration behavior as expected.
+- Verified CLI output/disc settings drive output dispatch and embedded FLAC tags.
+
+## M5 CDDA and paranoia control-path scaffold
+
+Status: partial
+
+Completed subtopic:
+- Added deterministic paranoia-mode rip state machine model in [../src/cdda/paranoia.rs](../src/cdda/paranoia.rs).
+- Added regression tests for parity-critical transitions: retry pending, retry-limit finalize, media-change abort, and fatal-error failure transitions.
+
+Coverage notes:
+- Added retry-policy tests mirroring the upstream repeat-rip behavior threshold and max-retry stopping behavior from /cyanrip/src/cyanrip_main.c.
