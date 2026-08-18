@@ -151,14 +151,14 @@ Exit criteria:
 
 ### M6 - Physical drive support and reliability layer
 
-Status: [ ]
+Status: [x]
 
 Checklist:
-- [~] Implement Linux physical drive backend (feature-gated first adapter in place; real-hardware validation pending).
-- [ ] Wire the Rust paranoia state machine to real frame reads, retries, and encoder flush transitions.
-- [ ] Port/replicate paranoia-like overlap/verify/retry heuristics and callback counters.
-- [ ] Add media-changed and interruption handling.
-- [ ] Validate practical ripping behavior on real hardware.
+- [x] Implement Linux physical drive backend (feature-gated libcdio-sys adapter, dependency checks, hardware validation scenarios, and manual media-change validation all completed).
+- [x] Wire the Rust paranoia state machine to real frame reads, retries, and encoder flush transitions.
+- [x] Port/replicate paranoia-like overlap/verify/retry heuristics and callback counters.
+- [x] Add media-changed and interruption handling.
+- [x] Validate practical ripping behavior on real hardware (TOC/frame/paranoia/interruption scenarios passed on target drive; manual media-change scenario executed and recorded).
 
 Suggested crates:
 - nix (Linux ioctl and descriptor safety)
@@ -172,11 +172,11 @@ Exit criteria:
 
 ### M7 - Full workflow integration and release parity
 
-Status: [ ]
+Status: [~]
 
 Checklist:
-- [ ] Wire end-to-end command workflow.
-- [ ] Add differential tests against C binary on shared fixtures.
+- [~] Wire end-to-end command workflow (main now dispatches to app-level run workflow; info-only, cue-only, and find-offset modes now execute successfully with structured output; default Run now selects reader source from CLI settings/device kind (image vs physical), runs paranoia/retry validation on selected tracks, resolves TOC-like per-track frame boundaries (cue-derived image TOC + image-TOC env override + metadata override + deterministic fallback), acquires frames, and writes selected tracks through a multi-track full-rip bridge path; opt-in synthetic full-rip mode remains available for hardware-free testing; hardware-backed production ripping flow is still pending hardening).
+- [~] Add differential tests against C binary on shared fixtures (CLI-first-slice harness added and verify-log fixture cases included; broader workflow differentials pending).
 - [ ] Finalize compatibility notes and known differences.
 - [ ] Prepare release checklist and migration notes.
 

@@ -510,6 +510,7 @@ mod tests {
     use crate::{
         CoverArtLookupSize, OutputFormat, PregapAction, ReleaseSelection, SanitizeMethod,
     };
+    use std::collections::BTreeSet;
 
     #[test]
     fn maps_defaults() {
@@ -789,6 +790,25 @@ mod tests {
             err,
             "Directory name scheme must contain {format} with multiple output formats!"
         );
+    }
+
+    #[test]
+    fn matches_upstream_short_option_surface() {
+        let cmd = CliArgs::command();
+        let got: BTreeSet<char> = cmd
+            .get_arguments()
+            .filter_map(|a| a.get_short())
+            .collect();
+
+        let expected: BTreeSet<char> = [
+            'd', 's', 'r', 'Z', 'S', 'p', 'P', 'O', 'H', 'E', 'W', 'K', 'o', 'b', 'D', 'F',
+            'L', 'M', 'l', 'T', 'I', 'J', 'a', 't', 'R', 'c', 'C', 'N', 'A', 'U', 'm', 'G',
+            'Q', 'f', 'Y',
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(got, expected);
     }
 
     #[test]

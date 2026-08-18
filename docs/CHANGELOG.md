@@ -74,6 +74,59 @@
 - Added optional libcdio-sys backend wiring for real-drive reads behind feature flags.
 - Updated libcdio-sys dependency/features to a safe set that avoids UDF headers and validates with `cargo check --features "backend-libcdio-sys paranoia"` and `cargo test --features "backend-libcdio-sys paranoia"`.
 
+### M6 Linux Real-Drive Validation Harness
+- Added ignored hardware regression tests in [../tests/linux_physical_drive_validation.rs](../tests/linux_physical_drive_validation.rs) that open `/dev/cdrom`, read TOC entries, and read one CDDA frame through the libcdio-backed adapter.
+- Added prerequisite checker script in [../scripts/check_linux_cdda_stack.sh](../scripts/check_linux_cdda_stack.sh) for pkg-config-visible libcdio libraries and feature-gated Rust compilation.
+- Documented real-drive validation commands and explicit "insert audio CD beforehand" prerequisite in [../README.md](../README.md).
+
+### M6 Linux Paranoia Runtime Wiring
+- Added Linux paranoia runner APIs in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs) that wire physical-drive reads into `run_track_with_paranoia` (including frame retries and finalize flush transitions).
+- Added backend-mock regression tests for retry/error and media-change abort paths in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs).
+- Added ignored hardware integration test in [../tests/linux_physical_drive_validation.rs](../tests/linux_physical_drive_validation.rs) to validate paranoia-run completion against a readable audio CD.
+
+### M6 Paranoia Heuristics and Callback Counters
+- Added paranoia callback counter model in [../src/cdda/reader.rs](../src/cdda/reader.rs) with counters aligned to upstream status categories (READ/VERIFY/OVERLAP/READERR/WROTE/FINISHED and related entries).
+- Added overlap/verify heuristic configuration and runtime handling in [../src/cdda/reader.rs](../src/cdda/reader.rs), including drift detection that forces retry behavior until convergence or retry limit.
+- Added Linux helper `heuristics_for_paranoia_level` and heuristic-aware runner variants in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs).
+- Added regression tests for overlap-drift retry behavior and level-based verify/overlap defaults in [../src/cdda/reader.rs](../src/cdda/reader.rs) and [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs).
+
+### M6 Media-Changed and Interruption Handling
+- Added interruptible paranoia runtime path in [../src/cdda/reader.rs](../src/cdda/reader.rs) that emits `QuitRequested` and transitions to aborted state while preserving callback counters.
+- Added linux-drive interruptible runner variants in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs) so physical-backend runs can share the same interruption semantics.
+- Added regression tests for interruption abort behavior and existing media-change abort behavior in [../src/cdda/reader.rs](../src/cdda/reader.rs) and [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs).
+
+### M6 Practical Real-Hardware Reliability Scenarios
+- Added real-hardware interruption validation test and manual media-change scenario reference in [../tests/linux_physical_drive_validation.rs](../tests/linux_physical_drive_validation.rs).
+- Added practical M6 scenario runbook and acceptance-notes template in [M6_REAL_HARDWARE_VALIDATION.md](M6_REAL_HARDWARE_VALIDATION.md).
+- Added scripted scenario runner in [../scripts/run_m6_hardware_validation.sh](../scripts/run_m6_hardware_validation.sh) to execute TOC/frame/paranoia/interruption checks consistently.
+- Executed manual media-change scenario once and recorded result details in [M6_REAL_HARDWARE_VALIDATION.md](M6_REAL_HARDWARE_VALIDATION.md), including operator prompt text shown during test run.
+
+### M7 Differential Harness (first slice)
+- Added ignored differential CLI test harness in [../tests/differential_cli_vs_c.rs](../tests/differential_cli_vs_c.rs) to compare Rust and C binary behavior for deterministic CLI scenarios.
+- Added CLI option-surface parity audit test in [../src/cli.rs](../src/cli.rs) to validate upstream short-option coverage.
+- Added M7 runbook and execution script in [M7_DIFFERENTIAL_HARNESS.md](M7_DIFFERENTIAL_HARNESS.md) and [../scripts/run_m7_cli_diff.sh](../scripts/run_m7_cli_diff.sh).
+- Implemented real `-Y/--verify-log` runtime handling in [../src/main.rs](../src/main.rs) using FUN512 verification outcomes and C-matching status messages.
+- Expanded differential harness cases to include verify-log fixture outcomes (`valid`, `mismatch`, `no_checksum`, `trailing`, and missing-file I/O error).
+- Added always-on Rust CLI integration coverage for verify-log status/message mapping in [../tests/verify_log_cli.rs](../tests/verify_log_cli.rs) so parity checks run without requiring the C binary.
+
+### M7 Run Workflow Wiring (first slice)
+- Replaced placeholder `Run` print path in [../src/main.rs](../src/main.rs) with dispatch to app-level workflow handling.
+- Added app-level workflow gate in [../src/app.rs](../src/app.rs) that now reports explicit not-yet-wired mode paths and unsupported output codecs with non-zero exit behavior.
+- Added new tests in [../tests/run_workflow_cli.rs](../tests/run_workflow_cli.rs) and app unit tests to lock command-path behavior for this slice.
+- Implemented `-I` info-only run path in [../src/app.rs](../src/app.rs) with deterministic runtime report output and success exit behavior.
+- Implemented `-J` cue-only run path in [../src/app.rs](../src/app.rs) with deterministic CUE-preview output and success exit behavior.
+- Implemented `-f` find-offset run path in [../src/app.rs](../src/app.rs) with deterministic status output and success exit behavior (disc-driven offset computation wiring remains pending).
+- Added an opt-in synthetic full-rip run slice in [../src/app.rs](../src/app.rs) gated by `CYANRIP_RS_ENABLE_SYNTHETIC_RIP=1`, which exercises the real WAV/FLAC writer flow and reports written files.
+- Added integration coverage for the synthetic full-rip path in [../tests/run_workflow_cli.rs](../tests/run_workflow_cli.rs), including output-root override via `CYANRIP_RS_OUTPUT_ROOT`.
+- Extended synthetic full-rip mode with `CYANRIP_RS_SYNTHETIC_SOURCE=image-reader` to source PCM through the image-backed CDDA frame reader before writing outputs.
+- Replaced default full-rip "not wired" path with a reader-selected full-rip bridge in [../src/app.rs](../src/app.rs): source is chosen from CLI device kind (`image` for cue/bin/nrg/toc or default, `physical` for device-like paths), frames are acquired from the selected reader, and outputs are produced via the existing writer flow.
+- Extended default full-rip bridge to honor selected CLI tracks (`-l`) and write multi-track outputs through the same reader-acquisition and writer pipeline.
+- Integrated paranoia/retry validation into the full-rip bridge frame acquisition path for both image and physical sources before output writing.
+- Updated full-rip bridge track boundary mapping to use selected track numbers for start LSN calculation, and added explicit per-track START_LSN/FRAMES reporting in run output.
+- Added TOC-like boundary resolution support in the full-rip bridge using per-track metadata overrides (`start_lsn`, `frames`, `end_lsn`) with deterministic fallback mapping.
+- Added image-source TOC override support via `CYANRIP_RS_IMAGE_TOC` (`track:start-end` list), which takes precedence over metadata overrides in default image full-rip runs.
+- Added cue-derived image TOC boundary extraction for `-d *.cue` runs in default full-rip mode (`INDEX 01` start LSN mapping with next-track frame spans), used before metadata fallback.
+
 ### Validation
 - Test suite passing after each major change set (cargo test).
 

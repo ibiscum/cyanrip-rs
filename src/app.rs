@@ -1,10 +1,18 @@
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::audio::flac::write_flac_file;
 use crate::audio::wav::write_wav_file;
-use crate::audio::PcmTrackData;
+use crate::audio::{PcmSpec, PcmTrackData};
+use crate::cdda::paranoia::{RetryPolicy, RipState};
+use crate::cdda::reader::run_track_with_paranoia_heuristics_interruptible;
+use crate::cdda::reader::{
+    CDDA_FRAME_BYTES, CddaFrameReader, FaultInjectedImageReader, ParanoiaHeuristicConfig,
+};
+use crate::cue::{CueDoc, CueFileType, CueTrack, render_cue};
 use crate::metadata::accurip::{
     AccuDbStatus, AccuRipError, AccuRipLookupResult, AccuRipService, AccuRipTrackInput,
 };
@@ -12,7 +20,894 @@ use crate::metadata::coverart::{CoverArtError, CoverArtImage, CoverArtService};
 use crate::metadata::discid::{DiscTrack, DiscidInfo, compute_discid};
 use crate::metadata::musicbrainz::{MusicBrainzError, MusicBrainzReleaseMeta, MusicBrainzService};
 use crate::naming::{NamingContext, build_track_relative_path};
-use crate::{OutputFormat, ReleaseSelection, Settings};
+use crate::{DriverKind, OutputFormat, ReleaseSelection, Settings, open_dev_kind};
+
+const DEFAULT_SYNTHETIC_FRAME_COUNT: usize = 32;
+
+#[cfg(all(target_os = "linux", feature = "cdda"))]
+fn paranoia_heuristics_for_level(paranoia_level: i32) -> ParanoiaHeuristicConfig {
+    crate::cdda::linux_drive::heuristics_for_paranoia_level(paranoia_level)
+}
+
+#[cfg(not(all(target_os = "linux", feature = "cdda")))]
+fn paranoia_heuristics_for_level(_paranoia_level: i32) -> ParanoiaHeuristicConfig {
+    ParanoiaHeuristicConfig::default()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunWorkflowError {
+    UnsupportedOutputFormat(OutputFormat),
+    NotYetImplemented(&'static str),
+    Runtime(String),
+}
+
+impl std::fmt::Display for RunWorkflowError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedOutputFormat(fmt_kind) => {
+                write!(f, "output format {fmt_kind:?} is not yet implemented")
+            }
+            Self::NotYetImplemented(msg) => write!(f, "{msg}"),
+            Self::Runtime(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+impl std::error::Error for RunWorkflowError {}
+
+fn render_info_only_report(settings: &Settings) -> String {
+    let mut lines = Vec::new();
+    lines.push("cyanrip-rs info-only mode".to_string());
+    lines.push(format!(
+        "Device: {}",
+        settings.dev_path.as_deref().unwrap_or("<default>")
+    ));
+    lines.push(format!("Offset (samples): {}", settings.offset));
+    lines.push(format!(
+        "Over/under-read frames: {}",
+        settings.over_under_read_frames
+    ));
+    lines.push(format!("Paranoia level: {}", settings.paranoia_level));
+    lines.push(format!("Max retries: {}", settings.max_retries));
+    lines.push(format!("Output formats configured: {}", settings.outputs.len()));
+    lines.push(format!("AccurateRip: {}", if settings.disable_accurip { "disabled" } else { "enabled" }));
+    lines.push(format!("MusicBrainz: {}", if settings.disable_mb { "disabled" } else { "enabled" }));
+    lines.push(format!(
+        "CoverArt DB: {}",
+        if settings.disable_coverart_db {
+            "disabled"
+        } else {
+            "enabled"
+        }
+    ));
+    lines.join("\n")
+}
+
+fn render_find_offset_report(settings: &Settings) -> String {
+    let mut lines = Vec::new();
+    lines.push("cyanrip-rs find-offset mode".to_string());
+    lines.push(format!(
+        "Device: {}",
+        settings.dev_path.as_deref().unwrap_or("<default>")
+    ));
+    lines.push("AccurateRip: enabled (required)".to_string());
+    lines.push("MusicBrainz: disabled".to_string());
+    lines.push("CoverArt DB: disabled".to_string());
+    lines.push("Eject on success: disabled".to_string());
+    lines.push("Offset baseline (samples): 0".to_string());
+    lines.push("Status: find-offset runtime is staged; disc-driven computation wiring is pending".to_string());
+    lines.join("\n")
+}
+
+fn parse_album_metadata_map(raw: Option<&str>) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Some(raw) = raw else {
+        return out;
+    };
+
+    for part in raw.split(':') {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = p.split_once('=') {
+            let key = k.trim();
+            let value = v.trim();
+            if !key.is_empty() && !value.is_empty() {
+                out.insert(key.to_string(), value.to_string());
+            }
+        }
+    }
+
+    out
+}
+
+fn parse_track_meta_entry(entry: &str) -> Option<(u32, BTreeMap<String, String>)> {
+    let (idx_raw, rest) = entry.split_once('=')?;
+    let idx = idx_raw.trim().parse::<u32>().ok()?;
+    if idx == 0 {
+        return None;
+    }
+
+    let mut map = BTreeMap::new();
+    for pair in rest.split(':') {
+        let p = pair.trim();
+        if p.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = p.split_once('=') {
+            let key = k.trim();
+            let value = v.trim();
+            if !key.is_empty() && !value.is_empty() {
+                map.insert(key.to_string(), value.to_string());
+            }
+        }
+    }
+
+    Some((idx, map))
+}
+
+fn render_cue_only_preview(settings: &Settings) -> String {
+    let meta = parse_album_metadata_map(settings.album_metadata.as_deref());
+    let mut parsed_tracks = Vec::new();
+
+    for entry in &settings.track_metadata {
+        if let Some((idx, fields)) = parse_track_meta_entry(entry) {
+            parsed_tracks.push((idx, fields));
+        }
+    }
+
+    parsed_tracks.sort_by_key(|(idx, _)| *idx);
+
+    let cue_tracks: Vec<CueTrack> = parsed_tracks
+        .into_iter()
+        .map(|(idx, fields)| {
+            let title = fields.get("title").cloned();
+            let performer = fields.get("artist").cloned();
+            let base_name = title.clone().unwrap_or_else(|| format!("Track {idx:02}"));
+            let file_path = format!("{idx:02} - {base_name}.flac");
+
+            CueTrack {
+                number: idx,
+                index: idx,
+                is_data: false,
+                preemphasis: false,
+                file_path,
+                cue_path: None,
+                file_type: CueFileType::Wave,
+                title,
+                performer,
+                isrc: None,
+                pregap_lsn: None,
+                start_lsn: 0,
+                start_lsn_sig: 0,
+                dropped_pregap_start: None,
+                merged_pregap_end: None,
+                previous_start_lsn_sig: None,
+            }
+        })
+        .collect();
+
+    let cue = render_cue(&CueDoc {
+        meta,
+        tracks: cue_tracks,
+        deemphasis: settings.deemphasis,
+        force_deemphasis: settings.force_deemphasis,
+    });
+
+    format!("cyanrip-rs cue-only preview\n{cue}")
+}
+
+fn env_var_truthy(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => {
+            let n = v.trim().to_ascii_lowercase();
+            n == "1" || n == "true" || n == "yes" || n == "on"
+        }
+        Err(_) => false,
+    }
+}
+
+fn default_synthetic_output_root() -> PathBuf {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!("cyanrip-rs-synthetic-rip-{now}"))
+}
+
+fn synthetic_track_pcm() -> PcmTrackData {
+    let mut samples = Vec::with_capacity(48_000 * 2);
+    for i in 0..48_000 {
+        let phase = (i % 128) as i16 - 64;
+        let val = phase * 120;
+        samples.push(val);
+        samples.push(-val);
+    }
+
+    PcmTrackData {
+        spec: PcmSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+        },
+        interleaved_i16_samples: samples,
+    }
+}
+
+fn build_synthetic_frames(frame_count: usize) -> Vec<Vec<u8>> {
+    let mut frames = Vec::with_capacity(frame_count);
+    for i in 0..frame_count {
+        let mut frame = vec![0u8; CDDA_FRAME_BYTES];
+        for (j, b) in frame.iter_mut().enumerate() {
+            *b = ((i * 31 + j * 17) & 0xFF) as u8;
+        }
+        frames.push(frame);
+    }
+    frames
+}
+
+fn configured_frame_count() -> usize {
+    match std::env::var("CYANRIP_RS_FRAME_COUNT") {
+        Ok(v) => v
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .filter(|n| *n > 0)
+            .unwrap_or(DEFAULT_SYNTHETIC_FRAME_COUNT),
+        Err(_) => DEFAULT_SYNTHETIC_FRAME_COUNT,
+    }
+}
+
+fn acquire_track_pcm_from_reader<R: CddaFrameReader>(
+    reader: &mut R,
+    start_lsn: i32,
+    frame_count: usize,
+) -> Result<PcmTrackData, RunWorkflowError> {
+    reader
+        .seek_frame(start_lsn)
+        .map_err(|e| RunWorkflowError::Runtime(format!("frame seek failed: {e:?}")))?;
+
+    let mut samples = Vec::new();
+    for _ in 0..frame_count {
+        let frame = reader
+            .read_frame()
+            .map_err(|e| RunWorkflowError::Runtime(format!("frame read failed: {e:?}")))?;
+
+        let mut off = 0usize;
+        while off + 1 < frame.len() {
+            let v = i16::from_le_bytes([frame[off], frame[off + 1]]);
+            samples.push(v);
+            off += 2;
+        }
+    }
+
+    Ok(PcmTrackData {
+        spec: PcmSpec {
+            channels: 2,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+        },
+        interleaved_i16_samples: samples,
+    })
+}
+
+fn acquire_track_pcm_from_image_reader(frame_count: usize) -> Result<PcmTrackData, RunWorkflowError> {
+    let frames = build_synthetic_frames(frame_count);
+    let mut reader = FaultInjectedImageReader::new(frames);
+    acquire_track_pcm_from_reader(&mut reader, 0, frame_count)
+}
+
+fn synthetic_track_pcm_from_image_reader(frame_count: usize) -> Result<PcmTrackData, RunWorkflowError> {
+    acquire_track_pcm_from_image_reader(frame_count)
+}
+
+fn synthetic_track_pcm_for_source() -> Result<PcmTrackData, RunWorkflowError> {
+    let source = std::env::var("CYANRIP_RS_SYNTHETIC_SOURCE").unwrap_or_else(|_| "tone".to_string());
+    if source.eq_ignore_ascii_case("image-reader") {
+        return synthetic_track_pcm_from_image_reader(configured_frame_count());
+    }
+
+    Ok(synthetic_track_pcm())
+}
+
+fn render_synthetic_full_rip(settings: &Settings) -> Result<String, RunWorkflowError> {
+    let output_root = match std::env::var("CYANRIP_RS_OUTPUT_ROOT") {
+        Ok(v) if !v.trim().is_empty() => PathBuf::from(v),
+        _ => default_synthetic_output_root(),
+    };
+
+    let mut album_meta: HashMap<String, String> = parse_album_metadata_map(settings.album_metadata.as_deref())
+        .into_iter()
+        .collect();
+
+    album_meta
+        .entry("album".to_string())
+        .or_insert_with(|| "Synthetic Album".to_string());
+    album_meta
+        .entry("album_artist".to_string())
+        .or_insert_with(|| "Synthetic Artist".to_string());
+
+    let mut tracks = Vec::new();
+    for entry in &settings.track_metadata {
+        if let Some((idx, fields)) = parse_track_meta_entry(entry) {
+            let mut track_meta: HashMap<String, String> = fields.into_iter().collect();
+            track_meta
+                .entry("track".to_string())
+                .or_insert_with(|| format!("{idx:02}"));
+            track_meta
+                .entry("title".to_string())
+                .or_insert_with(|| format!("Synthetic Track {idx:02}"));
+            let pcm = synthetic_track_pcm_for_source()?;
+            tracks.push(TrackOutputInput {
+                track_number: idx,
+                track_meta,
+                pcm,
+            });
+        }
+    }
+
+    if tracks.is_empty() {
+        let mut track_meta = HashMap::new();
+        track_meta.insert("track".to_string(), "01".to_string());
+        track_meta.insert("title".to_string(), "Synthetic Track 01".to_string());
+        let pcm = synthetic_track_pcm_for_source()?;
+        tracks.push(TrackOutputInput {
+            track_number: 1,
+            track_meta,
+            pcm,
+        });
+    }
+
+    let result = write_track_outputs(TrackOutputFlowInput {
+        settings: settings.clone(),
+        output_root: output_root.clone(),
+        album_meta,
+        tracks,
+    })
+    .map_err(|e| RunWorkflowError::Runtime(format!("synthetic full-rip failed: {e}")))?;
+
+    let mut out = String::new();
+    out.push_str("cyanrip-rs synthetic full-rip mode\n");
+    out.push_str(&format!("Output root: {}\n", output_root.display()));
+    out.push_str(&format!("Written files: {}\n", result.written_files.len()));
+    for file in &result.written_files {
+        out.push_str(&format!("FILE {}\n", file.absolute_path.display()));
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FullRipSource {
+    Image,
+    Physical,
+}
+
+fn full_rip_source_from_settings(settings: &Settings) -> FullRipSource {
+    match settings.dev_path.as_deref() {
+        Some(path) => match open_dev_kind(path) {
+            DriverKind::BinCue | DriverKind::Cue | DriverKind::Nrg | DriverKind::CdrDao => {
+                FullRipSource::Image
+            }
+            DriverKind::Unknown => FullRipSource::Physical,
+        },
+        None => FullRipSource::Image,
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda"))]
+fn acquire_track_pcm_from_physical_reader(
+    settings: &Settings,
+    frame_count: usize,
+    start_lsn: i32,
+) -> Result<PcmTrackData, RunWorkflowError> {
+    use crate::cdda::linux_drive::{open_linux_physical_drive, run_paranoia_on_linux_drive_with_defaults_for_level};
+
+    if settings.paranoia_level > 0 {
+        let mut retry_policy = if settings.ripping_retries > 0 {
+            RetryPolicy::new(
+                settings.ripping_retries as u32,
+                settings.max_retries.max(1) as u32,
+            )
+        } else {
+            RetryPolicy::disabled()
+        };
+
+        let run = run_paranoia_on_linux_drive_with_defaults_for_level(
+            settings.dev_path.as_deref(),
+            settings.paranoia_level,
+            start_lsn,
+            frame_count,
+            settings.max_retries.max(0) as u32,
+            &mut retry_policy,
+            |_pass, pass_frames| {
+                let mut acc = 0u32;
+                for frame in pass_frames {
+                    for b in frame {
+                        acc = acc.wrapping_add(*b as u32);
+                    }
+                }
+                acc
+            },
+        )
+        .map_err(|e| RunWorkflowError::Runtime(format!("physical paranoia run failed: {e:?}")))?;
+
+        if run.state != RipState::TrackComplete {
+            return Err(RunWorkflowError::Runtime(format!(
+                "physical paranoia run did not complete track: {:?}",
+                run.state
+            )));
+        }
+    }
+
+    let mut reader = open_linux_physical_drive(settings.dev_path.as_deref()).map_err(|e| {
+        RunWorkflowError::Runtime(format!("physical drive open failed: {e:?}"))
+    })?;
+    acquire_track_pcm_from_reader(&mut reader, start_lsn, frame_count)
+}
+
+#[cfg(not(all(target_os = "linux", feature = "cdda")))]
+fn acquire_track_pcm_from_physical_reader(
+    _settings: &Settings,
+    _frame_count: usize,
+    _start_lsn: i32,
+) -> Result<PcmTrackData, RunWorkflowError> {
+    Err(RunWorkflowError::Runtime(
+        "physical drive reader requires linux + cdda feature support".to_string(),
+    ))
+}
+
+fn selected_track_numbers(settings: &Settings) -> Vec<u32> {
+    if settings.rip_indices.is_empty() {
+        return vec![1];
+    }
+
+    settings
+        .rip_indices
+        .iter()
+        .filter(|n| **n > 0)
+        .map(|n| *n as u32)
+        .collect()
+}
+
+fn track_meta_map_from_settings(settings: &Settings) -> HashMap<u32, HashMap<String, String>> {
+    let mut out: HashMap<u32, HashMap<String, String>> = HashMap::new();
+    for entry in &settings.track_metadata {
+        if let Some((idx, fields)) = parse_track_meta_entry(entry) {
+            out.insert(idx, fields.into_iter().collect());
+        }
+    }
+    out
+}
+
+fn track_meta_for_number(
+    track_number: u32,
+    track_meta_map: &HashMap<u32, HashMap<String, String>>,
+) -> HashMap<String, String> {
+    let mut out = track_meta_map
+        .get(&track_number)
+        .cloned()
+        .unwrap_or_default();
+    out.entry("track".to_string())
+        .or_insert_with(|| format!("{track_number:02}"));
+    out.entry("title".to_string())
+        .or_insert_with(|| format!("Track {track_number:02}"));
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TrackBoundary {
+    track_number: u32,
+    start_lsn: i32,
+    frame_count: usize,
+}
+
+fn parse_i32_meta(map: &HashMap<String, String>, key: &str) -> Option<i32> {
+    map.get(key).and_then(|v| v.trim().parse::<i32>().ok())
+}
+
+fn parse_usize_meta(map: &HashMap<String, String>, key: &str) -> Option<usize> {
+    map.get(key)
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+}
+
+fn parse_image_toc_env() -> HashMap<u32, (i32, usize)> {
+    let raw = match std::env::var("CYANRIP_RS_IMAGE_TOC") {
+        Ok(v) => v,
+        Err(_) => return HashMap::new(),
+    };
+
+    let mut out = HashMap::new();
+    for part in raw.split(',') {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
+        }
+
+        let Some((track_s, range_s)) = p.split_once(':') else {
+            continue;
+        };
+        let Ok(track_number) = track_s.trim().parse::<u32>() else {
+            continue;
+        };
+        if track_number == 0 {
+            continue;
+        }
+
+        let Some((start_s, end_s)) = range_s.split_once('-') else {
+            continue;
+        };
+        let Ok(start_lsn) = start_s.trim().parse::<i32>() else {
+            continue;
+        };
+        let Ok(end_lsn) = end_s.trim().parse::<i32>() else {
+            continue;
+        };
+        if start_lsn < 0 || end_lsn < start_lsn {
+            continue;
+        }
+
+        let frame_count = (end_lsn - start_lsn + 1) as usize;
+        out.insert(track_number, (start_lsn, frame_count));
+    }
+
+    out
+}
+
+fn parse_cue_index_01_lsn(line: &str) -> Option<i32> {
+    let trimmed = line.trim();
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    if !parts[0].eq_ignore_ascii_case("INDEX") || parts[1] != "01" {
+        return None;
+    }
+
+    let mut ts = parts[2].split(':');
+    let mm = ts.next()?.trim().parse::<i32>().ok()?;
+    let ss = ts.next()?.trim().parse::<i32>().ok()?;
+    let ff = ts.next()?.trim().parse::<i32>().ok()?;
+    if ts.next().is_some() {
+        return None;
+    }
+    if mm < 0 || !(0..60).contains(&ss) || !(0..75).contains(&ff) {
+        return None;
+    }
+
+    Some(mm.saturating_mul(60).saturating_mul(75) + ss.saturating_mul(75) + ff)
+}
+
+fn parse_track_number(line: &str) -> Option<u32> {
+    let trimmed = line.trim();
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    if parts.len() < 2 || !parts[0].eq_ignore_ascii_case("TRACK") {
+        return None;
+    }
+    parts[1].parse::<u32>().ok().filter(|n| *n > 0)
+}
+
+fn parse_cue_track_starts(cue_text: &str) -> Vec<(u32, i32)> {
+    let mut starts = Vec::new();
+    let mut current_track: Option<u32> = None;
+
+    for line in cue_text.lines() {
+        if let Some(track_number) = parse_track_number(line) {
+            current_track = Some(track_number);
+            continue;
+        }
+
+        if let Some(start_lsn) = parse_cue_index_01_lsn(line)
+            && let Some(track_number) = current_track
+            && starts.iter().all(|(n, _)| *n != track_number)
+        {
+            starts.push((track_number, start_lsn));
+        }
+    }
+
+    starts.sort_by_key(|(n, _)| *n);
+    starts
+}
+
+fn parse_image_toc_from_cue_file(
+    cue_path: &Path,
+    default_frame_count: usize,
+) -> HashMap<u32, (i32, usize)> {
+    let text = match fs::read_to_string(cue_path) {
+        Ok(t) => t,
+        Err(_) => return HashMap::new(),
+    };
+
+    let starts = parse_cue_track_starts(&text);
+    if starts.is_empty() {
+        return HashMap::new();
+    }
+
+    let mut out = HashMap::new();
+    for idx in 0..starts.len() {
+        let (track_number, start_lsn) = starts[idx];
+        let frame_count = if let Some((_, next_start_lsn)) = starts.get(idx + 1) {
+            if *next_start_lsn > start_lsn {
+                (*next_start_lsn - start_lsn) as usize
+            } else {
+                default_frame_count
+            }
+        } else {
+            default_frame_count
+        };
+        out.insert(track_number, (start_lsn, frame_count));
+    }
+
+    out
+}
+
+fn image_toc_overrides_from_settings(
+    settings: &Settings,
+    default_frame_count: usize,
+) -> HashMap<u32, (i32, usize)> {
+    let mut out = HashMap::new();
+
+    if let Some(dev_path) = settings.dev_path.as_deref()
+        && open_dev_kind(dev_path) == DriverKind::Cue
+    {
+        let cue_overrides = parse_image_toc_from_cue_file(Path::new(dev_path), default_frame_count);
+        out.extend(cue_overrides);
+    }
+
+    for (track_number, range) in parse_image_toc_env() {
+        out.insert(track_number, range);
+    }
+
+    out
+}
+
+fn resolve_track_boundaries(
+    track_numbers: &[u32],
+    track_meta_map: &HashMap<u32, HashMap<String, String>>,
+    default_frame_count: usize,
+    image_toc_overrides: Option<&HashMap<u32, (i32, usize)>>,
+) -> Vec<TrackBoundary> {
+    track_numbers
+        .iter()
+        .map(|track_number| {
+            let default_start = ((*track_number as usize)
+                .saturating_sub(1)
+                .saturating_mul(default_frame_count)) as i32;
+
+            if let Some((start_lsn, frame_count)) = image_toc_overrides
+                .and_then(|m| m.get(track_number).copied())
+            {
+                return TrackBoundary {
+                    track_number: *track_number,
+                    start_lsn,
+                    frame_count,
+                };
+            }
+
+            let meta = track_meta_map.get(track_number);
+            let start_lsn = meta
+                .and_then(|m| parse_i32_meta(m, "start_lsn"))
+                .filter(|n| *n >= 0)
+                .unwrap_or(default_start);
+
+            let frame_count = if let Some(m) = meta {
+                if let Some(frames) = parse_usize_meta(m, "frames") {
+                    frames
+                } else if let Some(end_lsn) = parse_i32_meta(m, "end_lsn") {
+                    if end_lsn >= start_lsn {
+                        (end_lsn - start_lsn + 1) as usize
+                    } else {
+                        default_frame_count
+                    }
+                } else {
+                    default_frame_count
+                }
+            } else {
+                default_frame_count
+            };
+
+            TrackBoundary {
+                track_number: *track_number,
+                start_lsn,
+                frame_count,
+            }
+        })
+        .collect()
+}
+
+fn acquire_tracks_pcm_from_image_reader(
+    settings: &Settings,
+    boundaries: &[TrackBoundary],
+) -> Result<Vec<(u32, PcmTrackData)>, RunWorkflowError> {
+    let max_frame_end = boundaries
+        .iter()
+        .map(|b| (b.start_lsn.max(0) as usize).saturating_add(b.frame_count))
+        .max()
+        .unwrap_or(DEFAULT_SYNTHETIC_FRAME_COUNT);
+    let total_frames = max_frame_end.max(DEFAULT_SYNTHETIC_FRAME_COUNT);
+    let frames = build_synthetic_frames(total_frames);
+    let mut reader = FaultInjectedImageReader::new(frames);
+
+    let mut out = Vec::with_capacity(boundaries.len());
+    for boundary in boundaries {
+        let start_lsn = boundary.start_lsn;
+        let frame_count = boundary.frame_count;
+
+        if settings.paranoia_level > 0 {
+            let mut retry_policy = if settings.ripping_retries > 0 {
+                RetryPolicy::new(
+                    settings.ripping_retries as u32,
+                    settings.max_retries.max(1) as u32,
+                )
+            } else {
+                RetryPolicy::disabled()
+            };
+
+            let heuristics = paranoia_heuristics_for_level(settings.paranoia_level);
+            let run = run_track_with_paranoia_heuristics_interruptible(
+                &mut reader,
+                start_lsn,
+                frame_count,
+                settings.max_retries.max(0) as u32,
+                &mut retry_policy,
+                heuristics,
+                || false,
+                |_pass, pass_frames| {
+                    let mut acc = 0u32;
+                    for frame in pass_frames {
+                        for b in frame {
+                            acc = acc.wrapping_add(*b as u32);
+                        }
+                    }
+                    acc
+                },
+            )
+            .map_err(|e| {
+                RunWorkflowError::Runtime(format!("image paranoia run failed: {e:?}"))
+            })?;
+
+            if run.state != RipState::TrackComplete {
+                return Err(RunWorkflowError::Runtime(format!(
+                    "image paranoia run did not complete track: {:?}",
+                    run.state
+                )));
+            }
+        }
+
+        let pcm = acquire_track_pcm_from_reader(&mut reader, start_lsn, frame_count)?;
+        out.push((boundary.track_number, pcm));
+    }
+
+    Ok(out)
+}
+
+fn acquire_tracks_pcm_from_physical_reader(
+    settings: &Settings,
+    boundaries: &[TrackBoundary],
+) -> Result<Vec<(u32, PcmTrackData)>, RunWorkflowError> {
+    let mut out = Vec::with_capacity(boundaries.len());
+    for boundary in boundaries {
+        let start_lsn = boundary.start_lsn;
+        let frame_count = boundary.frame_count;
+        let pcm = acquire_track_pcm_from_physical_reader(settings, frame_count, start_lsn)?;
+        out.push((boundary.track_number, pcm));
+    }
+    Ok(out)
+}
+
+fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunWorkflowError> {
+    let source = full_rip_source_from_settings(settings);
+    let track_numbers = selected_track_numbers(settings);
+    let default_frame_count = configured_frame_count();
+    let track_meta_map = track_meta_map_from_settings(settings);
+    let image_toc_overrides = match source {
+        FullRipSource::Image => {
+            let map = image_toc_overrides_from_settings(settings, default_frame_count);
+            if map.is_empty() {
+                None
+            } else {
+                Some(map)
+            }
+        }
+        FullRipSource::Physical => None,
+    };
+    let boundaries = resolve_track_boundaries(
+        &track_numbers,
+        &track_meta_map,
+        default_frame_count,
+        image_toc_overrides.as_ref(),
+    );
+    let pcm_tracks = match source {
+        FullRipSource::Image => {
+            acquire_tracks_pcm_from_image_reader(settings, &boundaries)?
+        }
+        FullRipSource::Physical => {
+            acquire_tracks_pcm_from_physical_reader(settings, &boundaries)?
+        }
+    };
+
+    let output_root = match std::env::var("CYANRIP_RS_OUTPUT_ROOT") {
+        Ok(v) if !v.trim().is_empty() => PathBuf::from(v),
+        _ => default_synthetic_output_root(),
+    };
+
+    let mut album_meta: HashMap<String, String> = parse_album_metadata_map(settings.album_metadata.as_deref())
+        .into_iter()
+        .collect();
+    album_meta
+        .entry("album".to_string())
+        .or_insert_with(|| "Runtime Album".to_string());
+    album_meta
+        .entry("album_artist".to_string())
+        .or_insert_with(|| "Runtime Artist".to_string());
+
+    let tracks: Vec<TrackOutputInput> = pcm_tracks
+        .into_iter()
+        .map(|(track_number, pcm)| TrackOutputInput {
+            track_number,
+            track_meta: track_meta_for_number(track_number, &track_meta_map),
+            pcm,
+        })
+        .collect();
+
+    let result = write_track_outputs(TrackOutputFlowInput {
+        settings: settings.clone(),
+        output_root: output_root.clone(),
+        album_meta,
+        tracks,
+    })
+    .map_err(|e| RunWorkflowError::Runtime(format!("full-rip writer flow failed: {e}")))?;
+
+    let mut out = String::new();
+    out.push_str("cyanrip-rs full-rip bridge mode\n");
+    out.push_str(&format!(
+        "Source: {}\n",
+        match source {
+            FullRipSource::Image => "image",
+            FullRipSource::Physical => "physical",
+        }
+    ));
+    out.push_str(&format!("Output root: {}\n", output_root.display()));
+    out.push_str(&format!("Written files: {}\n", result.written_files.len()));
+    for boundary in &boundaries {
+        out.push_str(&format!(
+            "TRACK {} START_LSN {} FRAMES {}\n",
+            boundary.track_number, boundary.start_lsn, boundary.frame_count
+        ));
+    }
+    for file in &result.written_files {
+        out.push_str(&format!("FILE {}\n", file.absolute_path.display()));
+    }
+    Ok(out)
+}
+
+pub fn run_workflow(settings: &Settings) -> Result<Option<String>, RunWorkflowError> {
+    for fmt_kind in &settings.outputs {
+        match fmt_kind {
+            OutputFormat::Wav | OutputFormat::Flac => {}
+            _ => return Err(RunWorkflowError::UnsupportedOutputFormat(*fmt_kind)),
+        }
+    }
+
+    if settings.find_drive_offset {
+        return Ok(Some(render_find_offset_report(settings)));
+    }
+
+    if settings.print_info_only {
+        return Ok(Some(render_info_only_report(settings)));
+    }
+
+    if settings.generate_cue_only {
+        return Ok(Some(render_cue_only_preview(settings)));
+    }
+
+    if env_var_truthy("CYANRIP_RS_ENABLE_SYNTHETIC_RIP") {
+        return render_synthetic_full_rip(settings).map(Some);
+    }
+
+    run_full_rip_from_selected_source(settings).map(Some)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppTrack {
@@ -515,6 +1410,7 @@ mod tests {
     use crate::audio::{PcmSpec, PcmTrackData};
     use crate::CoverArtLookupSize;
     use crate::metadata::accurip::{AccuRipDiscIds, AccuRipTrackMatches};
+    use crate::{OutputFormat, Settings};
 
     #[derive(Clone)]
     struct MbMock {
@@ -604,6 +1500,243 @@ mod tests {
         ]
     }
 
+    #[test]
+    fn run_workflow_rejects_unimplemented_output_codec() {
+        let settings = Settings {
+            outputs: vec![OutputFormat::Mp3],
+            ..Settings::default()
+        };
+
+        assert_eq!(
+            run_workflow(&settings),
+            Err(RunWorkflowError::UnsupportedOutputFormat(OutputFormat::Mp3))
+        );
+    }
+
+    #[test]
+    fn run_workflow_find_offset_mode_returns_report() {
+        let settings = Settings {
+            find_drive_offset: true,
+            outputs: vec![OutputFormat::Flac],
+            ..Settings::default()
+        };
+
+        let out = run_workflow(&settings).expect("find-offset mode should be wired");
+        let report = out.expect("find-offset mode should produce a report");
+        assert!(report.contains("cyanrip-rs find-offset mode"));
+        assert!(report.contains("AccurateRip: enabled"));
+    }
+
+    #[test]
+    fn run_workflow_info_mode_returns_report() {
+        let settings = Settings {
+            print_info_only: true,
+            outputs: vec![OutputFormat::Flac],
+            ..Settings::default()
+        };
+
+        let out = run_workflow(&settings).expect("info-only mode should be wired");
+        let report = out.expect("info-only mode should produce a report");
+        assert!(report.contains("cyanrip-rs info-only mode"));
+        assert!(report.contains("Paranoia level:"));
+    }
+
+    #[test]
+    fn run_workflow_cue_only_mode_returns_preview() {
+        let settings = Settings {
+            generate_cue_only: true,
+            album_metadata: Some("album=Example Album:album_artist=Example Artist".to_string()),
+            track_metadata: vec![
+                "1=title=Intro:artist=Example Artist".to_string(),
+                "2=title=Outro:artist=Example Artist".to_string(),
+            ],
+            outputs: vec![OutputFormat::Flac],
+            ..Settings::default()
+        };
+
+        let out = run_workflow(&settings).expect("cue-only mode should be wired");
+        let cue = out.expect("cue-only mode should produce CUE text");
+        assert!(cue.contains("cyanrip-rs cue-only preview"));
+        assert!(cue.contains("TITLE \"Example Album\""));
+        assert!(cue.contains("TRACK 01 AUDIO"));
+        assert!(cue.contains("TRACK 02 AUDIO"));
+    }
+
+    #[test]
+    fn run_workflow_selects_image_source_for_default_and_cue_paths() {
+        let settings_default = Settings {
+            outputs: vec![OutputFormat::Flac],
+            ..Settings::default()
+        };
+        assert_eq!(full_rip_source_from_settings(&settings_default), FullRipSource::Image);
+
+        let settings_cue = Settings {
+            dev_path: Some("disc.cue".to_string()),
+            outputs: vec![OutputFormat::Flac],
+            ..Settings::default()
+        };
+        assert_eq!(full_rip_source_from_settings(&settings_cue), FullRipSource::Image);
+    }
+
+    #[test]
+    fn run_workflow_selects_physical_source_for_device_like_paths() {
+        let settings = Settings {
+            dev_path: Some("/dev/cdrom".to_string()),
+            outputs: vec![OutputFormat::Flac],
+            ..Settings::default()
+        };
+
+        assert_eq!(
+            full_rip_source_from_settings(&settings),
+            FullRipSource::Physical
+        );
+    }
+
+    #[test]
+    fn resolve_track_boundaries_prefers_metadata_over_defaults() {
+        let track_numbers = vec![2u32, 4u32];
+        let mut map: HashMap<u32, HashMap<String, String>> = HashMap::new();
+        map.insert(
+            2,
+            [
+                ("start_lsn".to_string(), "20".to_string()),
+                ("frames".to_string(), "10".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        map.insert(
+            4,
+            [
+                ("start_lsn".to_string(), "100".to_string()),
+                ("end_lsn".to_string(), "115".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+
+        let got = resolve_track_boundaries(&track_numbers, &map, 32, None);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].track_number, 2);
+        assert_eq!(got[0].start_lsn, 20);
+        assert_eq!(got[0].frame_count, 10);
+        assert_eq!(got[1].track_number, 4);
+        assert_eq!(got[1].start_lsn, 100);
+        assert_eq!(got[1].frame_count, 16);
+    }
+
+    #[test]
+    fn parse_image_toc_env_parses_valid_entries_and_skips_invalid() {
+        unsafe {
+            std::env::set_var(
+                "CYANRIP_RS_IMAGE_TOC",
+                "1:0-99,2:100-199,bad,3:300-299,0:10-20,4:400-450",
+            );
+        }
+
+        let got = parse_image_toc_env();
+
+        assert_eq!(got.get(&1), Some(&(0, 100)));
+        assert_eq!(got.get(&2), Some(&(100, 100)));
+        assert_eq!(got.get(&4), Some(&(400, 51)));
+        assert!(got.get(&3).is_none());
+        assert!(got.get(&0).is_none());
+
+        unsafe {
+            std::env::remove_var("CYANRIP_RS_IMAGE_TOC");
+        }
+    }
+
+    #[test]
+    fn resolve_track_boundaries_prefers_image_toc_over_metadata() {
+        let track_numbers = vec![2u32, 4u32];
+        let mut map: HashMap<u32, HashMap<String, String>> = HashMap::new();
+        map.insert(
+            2,
+            [
+                ("start_lsn".to_string(), "20".to_string()),
+                ("frames".to_string(), "10".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+
+        let mut toc = HashMap::new();
+        toc.insert(2u32, (500, 25usize));
+        toc.insert(4u32, (800, 30usize));
+
+        let got = resolve_track_boundaries(&track_numbers, &map, 32, Some(&toc));
+
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].track_number, 2);
+        assert_eq!(got[0].start_lsn, 500);
+        assert_eq!(got[0].frame_count, 25);
+        assert_eq!(got[1].track_number, 4);
+        assert_eq!(got[1].start_lsn, 800);
+        assert_eq!(got[1].frame_count, 30);
+    }
+
+    #[test]
+    fn parse_cue_track_starts_reads_index_01_values() {
+        let cue = r#"
+FILE "disc.bin" BINARY
+  TRACK 01 AUDIO
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    INDEX 00 00:00:07
+    INDEX 01 00:00:10
+  TRACK 03 MODE1/2352
+    INDEX 01 00:01:00
+"#;
+
+        let got = parse_cue_track_starts(cue);
+        assert_eq!(got, vec![(1, 0), (2, 10), (3, 75)]);
+    }
+
+    #[test]
+    fn parse_image_toc_from_cue_file_derives_next_track_ranges() {
+        let cue_path = unique_temp_cue_path();
+        std::fs::write(
+            &cue_path,
+            "FILE \"disc.bin\" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    INDEX 01 00:00:10\n",
+        )
+        .expect("cue fixture write should succeed");
+
+        let got = parse_image_toc_from_cue_file(&cue_path, 32);
+
+        assert_eq!(got.get(&1), Some(&(0, 10)));
+        assert_eq!(got.get(&2), Some(&(10, 32)));
+
+        let _ = std::fs::remove_file(&cue_path);
+    }
+
+    #[test]
+    fn image_toc_overrides_from_settings_allows_env_to_override_cue() {
+        let cue_path = unique_temp_cue_path();
+        std::fs::write(
+            &cue_path,
+            "FILE \"disc.bin\" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:20\n",
+        )
+        .expect("cue fixture write should succeed");
+
+        let settings = Settings {
+            dev_path: Some(cue_path.to_string_lossy().to_string()),
+            ..Settings::default()
+        };
+
+        unsafe {
+            std::env::set_var("CYANRIP_RS_IMAGE_TOC", "2:500-524");
+        }
+        let got = image_toc_overrides_from_settings(&settings, 32);
+        unsafe {
+            std::env::remove_var("CYANRIP_RS_IMAGE_TOC");
+        }
+
+        assert_eq!(got.get(&2), Some(&(500, 25)));
+
+        let _ = std::fs::remove_file(&cue_path);
+    }
+
     fn mb_ok() -> MusicBrainzReleaseMeta {
         MusicBrainzReleaseMeta {
             musicbrainz_albumid: "rel-1".to_string(),
@@ -653,6 +1786,14 @@ mod tests {
             .expect("time should be after epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("cyanrip-rs-output-dispatch-{now}"))
+    }
+
+    fn unique_temp_cue_path() -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("cyanrip-rs-image-toc-{now}.cue"))
     }
 
     fn sample_pcm() -> PcmTrackData {

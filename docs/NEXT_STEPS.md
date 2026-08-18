@@ -111,13 +111,34 @@ Status update:
 - Linux physical-drive adapter implementing CddaFrameReader under cdda feature: done
 - Hardware-free backend regression tests for seek/read/media-changed mapping: done
 - Real libcdio-backed compile/test path: done
-- Real-drive hardware validation: pending on target machine setup
+- Real-drive hardware validation harness (TOC/frame/paranoia/interruption + manual media-change scenario): done
+- Practical reliability acceptance runbook and notes template: done
+- Full practical reliability evidence capture on target hardware matrix: done
 
 ## After M2
 
 16. Continue parity matrix maintenance as each feature lands.
 - Update statuses in [../PARITY_MATRIX.md](../PARITY_MATRIX.md).
 - Record accepted differences in [PARITY_NOTES.md](PARITY_NOTES.md).
+
+17. Start M7 differential harness against C binary.
+- Add hardware-independent CLI differential cases first.
+- Expand to fixture-backed workflow comparisons once runtime command path is complete.
+
+Status update:
+- Differential CLI first-slice harness: done
+- Option-surface parity audit for CLI short flags: done
+- Fixture-backed and end-to-end workflow differential comparisons: pending
+- Run action dispatch wiring (mode/codec gating): done
+
+18. Continue M7 run-workflow implementations after dispatch slice.
+- Harden default reader-selected full-rip bridge into production workflow (true TOC-derived track boundaries instead of bridge-calculated synthetic windows, robust physical-drive error handling, and final output/log parity details).
+- Keep synthetic full-rip path as hardware-free regression path while production flow matures.
+
+Status update:
+- Image-source cue-derived TOC boundaries (`-d *.cue`, `INDEX 01` based) in default run path: done
+- Image-source explicit override path (`CYANRIP_RS_IMAGE_TOC`) with precedence over metadata/defaults: done
+- Physical-source true TOC extraction and boundary/error parity hardening: pending
 
 ## Paranoia Mode Design Reference
 
