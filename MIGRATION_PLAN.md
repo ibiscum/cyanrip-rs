@@ -1,6 +1,6 @@
 # cyanrip Rust Migration Plan
 
-This document is the implementation roadmap for porting /home/ulf/data/cyanrip/src to Rust in phases, using native Rust libraries whenever practical.
+This document is the implementation roadmap for porting to Rust in phases, using native Rust libraries whenever practical.
 
 ## Goals
 

@@ -1,5 +1,7 @@
 # cyanrip-rs
 
+This repository is an attemp to port from C to Rust with the help of GitHub Co-Pilot. Basis for this is the excellent application cyanrip which can be found here: https://github.com/cyanreg/cyanrip
+
 Step-by-step migration roadmap is documented in [MIGRATION_PLAN.md](MIGRATION_PLAN.md).
 Feature-by-feature parity tracking is documented in [PARITY_MATRIX.md](PARITY_MATRIX.md).
 

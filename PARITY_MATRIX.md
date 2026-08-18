@@ -10,7 +10,7 @@ Legend:
 
 ## Scope Baseline
 
-Source baseline is /home/ulf/data/cyanrip/src.
+Source baseline is /cyanrip/src.
 
 ## Feature Parity Table
 
