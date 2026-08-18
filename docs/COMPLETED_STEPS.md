@@ -150,3 +150,15 @@ Completed subtopic:
 
 Coverage notes:
 - Added retry-policy tests mirroring the upstream repeat-rip behavior threshold and max-retry stopping behavior from /cyanrip/src/cyanrip_main.c.
+
+## M6 Linux physical-drive adapter scaffold
+
+Status: partial
+
+Completed subtopic:
+- Added Linux physical-drive adapter module in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs) implementing the shared CDDA frame reader contract.
+- Added feature-gated backend wiring for libcdio-sys and fallback unsupported backend behavior when no physical backend is enabled.
+
+Coverage notes:
+- Added hardware-free backend regression tests for media-changed mapping parity, seek/read progression, read-failure propagation, and backend cleanup.
+- Validated libcdio-sys backend compilation/tests with safe feature set (`backend-libcdio-sys` + `paranoia`) after switching to libcdio-sys 2.x without UDF default features.

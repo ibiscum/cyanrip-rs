@@ -154,7 +154,7 @@ Exit criteria:
 Status: [ ]
 
 Checklist:
-- [ ] Implement Linux physical drive backend.
+- [~] Implement Linux physical drive backend (feature-gated first adapter in place; real-hardware validation pending).
 - [ ] Wire the Rust paranoia state machine to real frame reads, retries, and encoder flush transitions.
 - [ ] Port/replicate paranoia-like overlap/verify/retry heuristics and callback counters.
 - [ ] Add media-changed and interruption handling.

@@ -47,7 +47,7 @@ Source baseline is /cyanrip/src.
 | FLAC metadata embedding | cyanrip_encode.c + cyanrip_main.c metadata flow | propagate album/track/disc metadata into FLAC Vorbis comments | src/app.rs write_track_outputs + metaflac | Done (FLAC scope) | Yes |
 | FIFO frame/packet queues | fifo_frame.c + fifo_packet.c | thread-safe producer-consumer queues | src/audio/queue.rs | Planned | No |
 | Paranoia ripping state machine | cyanrip_main.c + cdio/paranoia callbacks | retry loop, retry-limit finalize, media-changed abort, and flush/finalize transitions | src/cdda/paranoia.rs | In progress (control-path scaffold) | Yes |
-| CD image + drive access | cyanrip_main.c + libcdio/paranoia | media read, retries, hot-remove checks | src/cdda/reader.rs | In progress (trait + image-backed fake + fault injection) | Yes |
+| CD image + drive access | cyanrip_main.c + libcdio/paranoia | media read, retries, hot-remove checks | src/cdda/reader.rs + src/cdda/linux_drive.rs | In progress (trait + image-backed fake + Linux adapter scaffold) | Yes |
 | ReplayGain and EBU R128 | cyanrip_main.c + cyanrip_encode.c | album/track loudness metadata computation | src/audio/replaygain.rs | Deferred | No |
 | Full codec parity set | cyanrip_encode.c | FLAC, MP3, TTA, OPUS, AAC, WV, VORBIS, ALAC, WAV, PCM | src/audio/codecs/* | Deferred | No |
 
@@ -55,12 +55,12 @@ Source baseline is /cyanrip/src.
 
 - Implemented and test-covered: core settings and validation logic from CLI/control path plus deterministic naming/cue/log/checksum modules, all M3 metadata core modules, and metadata-flow orchestration.
 - Major gaps: metadata embedding for non-FLAC codecs, broader audio processing stages, and CD I/O backend integration.
-- Paranoia mode status: control-path state machine plus image-backed reader/fault-injection integration landed; physical-drive backend wiring is pending.
+- Paranoia mode status: control-path state machine, image-backed reader/fault-injection integration, and first Linux physical-drive adapter landed; live libcdio runtime validation is pending.
 - Deferred explicitly: full codec parity and replaygain implementation details until core end-to-end path is stable.
 
 ## Immediate Next Slice
 
-1. Wire the paranoia-enabled reader abstraction to Linux physical-drive backend implementations.
+1. Validate libcdio-backed Linux adapter on real hardware and complete callback/paranoia parity checks.
 2. Expand metadata embedding to additional codecs as they are implemented.
 3. Keep unsupported codecs behind explicit deferred errors until implemented.
 4. Keep error semantics aligned to this parity matrix and update statuses as features land.
