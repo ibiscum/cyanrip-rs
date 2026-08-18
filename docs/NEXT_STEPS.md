@@ -49,9 +49,23 @@ Status update:
 7. Start M4 audio output pipeline.
 - Implement WAV output path first with integration tests.
 
+Status update:
+- WAV output path: done
+- WAV end-to-end write/read integration test: done
+
+8. Continue M4 audio output pipeline.
+- Implement FLAC output path with deterministic integration tests.
+
+Status update:
+- FLAC output path: done
+- FLAC end-to-end write/read integration test: done
+
+9. Continue M4 audio output pipeline.
+- Add per-track writer flow and output dispatch for WAV/FLAC.
+
 ## After M2
 
-8. Continue parity matrix maintenance as each feature lands.
+10. Continue parity matrix maintenance as each feature lands.
 - Update statuses in [../PARITY_MATRIX.md](../PARITY_MATRIX.md).
 - Record accepted differences in [PARITY_NOTES.md](PARITY_NOTES.md).
 
