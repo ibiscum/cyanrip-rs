@@ -43,19 +43,24 @@ Source baseline is /cyanrip/src.
 | Encoder pipeline | cyanrip_encode.c | decode/filter/encode/write pipeline | src/audio/* | In progress (WAV+FLAC core paths) | Yes (WAV+FLAC) |
 | WAV writer | cyanrip_encode.c | write PCM samples to RIFF/WAVE container | src/audio/wav.rs | Done (core rules) | Yes |
 | FLAC writer | cyanrip_encode.c | write PCM samples to FLAC stream/container | src/audio/flac.rs | Done (core rules) | Yes |
+| Per-track output dispatch | cyanrip_main.c + cyanrip_encode.c | select configured output formats and emit concrete per-track files | src/app.rs write_track_outputs | Done (WAV/FLAC scope) | Yes |
+| FLAC metadata embedding | cyanrip_encode.c + cyanrip_main.c metadata flow | propagate album/track/disc metadata into FLAC Vorbis comments | src/app.rs write_track_outputs + metaflac | Done (FLAC scope) | Yes |
 | FIFO frame/packet queues | fifo_frame.c + fifo_packet.c | thread-safe producer-consumer queues | src/audio/queue.rs | Planned | No |
-| CD image + drive access | cyanrip_main.c + libcdio/paranoia | media read, retries, hot-remove checks | src/cdda/* | Planned | No |
+| Paranoia ripping state machine | cyanrip_main.c + cdio/paranoia callbacks | retry loop, retry-limit finalize, media-changed abort, and flush/finalize transitions | src/cdda/paranoia.rs | In progress (control-path scaffold) | Yes |
+| CD image + drive access | cyanrip_main.c + libcdio/paranoia | media read, retries, hot-remove checks | src/cdda/reader.rs | In progress (trait + image-backed fake + fault injection) | Yes |
 | ReplayGain and EBU R128 | cyanrip_main.c + cyanrip_encode.c | album/track loudness metadata computation | src/audio/replaygain.rs | Deferred | No |
 | Full codec parity set | cyanrip_encode.c | FLAC, MP3, TTA, OPUS, AAC, WV, VORBIS, ALAC, WAV, PCM | src/audio/codecs/* | Deferred | No |
 
 ## Current Gap Summary
 
 - Implemented and test-covered: core settings and validation logic from CLI/control path plus deterministic naming/cue/log/checksum modules, all M3 metadata core modules, and metadata-flow orchestration.
-- Major gaps: broader audio pipeline wiring (per-track flow, metadata embedding), and CD I/O layer.
+- Major gaps: metadata embedding for non-FLAC codecs, broader audio processing stages, and CD I/O backend integration.
+- Paranoia mode status: control-path state machine plus image-backed reader/fault-injection integration landed; physical-drive backend wiring is pending.
 - Deferred explicitly: full codec parity and replaygain implementation details until core end-to-end path is stable.
 
 ## Immediate Next Slice
 
-1. Add per-track writer flow and output dispatch wiring for WAV/FLAC.
-2. Add app-path integration tests that connect CLI settings to metadata orchestration entrypoints.
-3. Keep error semantics aligned to this parity matrix and update statuses as features land.
+1. Wire the paranoia-enabled reader abstraction to Linux physical-drive backend implementations.
+2. Expand metadata embedding to additional codecs as they are implemented.
+3. Keep unsupported codecs behind explicit deferred errors until implemented.
+4. Keep error semantics aligned to this parity matrix and update statuses as features land.
