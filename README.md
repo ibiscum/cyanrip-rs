@@ -19,6 +19,20 @@ For every PR, update docs as part of the same change set:
 
 PRs that modify behavior without corresponding doc updates should be considered incomplete.
 
+## Linux CDDA Real-Drive Validation
+
+The Linux physical-drive adapter is available behind the `backend-libcdio-sys` feature.
+
+1. Verify native/runtime prerequisites:
+	- `./scripts/check_linux_cdda_stack.sh`
+2. Run the real-drive smoke test (ignored by default because hardware is required):
+	- `CYANRIP_CDROM_DEVICE=/dev/sr0 cargo test --features "backend-libcdio-sys paranoia" --test linux_physical_drive_validation -- --ignored`
+
+Notes:
+- Use the actual device path for your machine (`/dev/sr0`, `/dev/cdrom`, etc.).
+- Insert a readable audio CD beforehand (the first regression test reads TOC data from the drive).
+- For practical M6 reliability scenario runs and acceptance-note capture, use `./scripts/run_m6_hardware_validation.sh` and [docs/M6_REAL_HARDWARE_VALIDATION.md](docs/M6_REAL_HARDWARE_VALIDATION.md).
+
 ## Licensing
 
 - Project license: LGPL-2.1-or-later (see [LICENSE](LICENSE)).

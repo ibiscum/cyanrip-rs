@@ -447,6 +447,11 @@ impl CliArgs {
             settings.disable_coverart_db = true;
         }
 
+        if settings.print_info_only {
+            // Info-only mode never performs ripping, so eject is effectively disabled.
+            settings.eject_on_success_rip = false;
+        }
+
         if settings.find_drive_offset {
             settings.disable_accurip = false;
             settings.disable_mb = true;
@@ -510,6 +515,7 @@ mod tests {
     use crate::{
         CoverArtLookupSize, OutputFormat, PregapAction, ReleaseSelection, SanitizeMethod,
     };
+    use std::collections::BTreeSet;
 
     #[test]
     fn maps_defaults() {
@@ -720,6 +726,13 @@ mod tests {
     }
 
     #[test]
+    fn info_only_disables_eject_side_effect() {
+        let cfg = parse_from_iter(["cyanrip-rs", "-I", "-Q"]).unwrap();
+        assert!(cfg.settings.print_info_only);
+        assert!(!cfg.settings.eject_on_success_rip);
+    }
+
+    #[test]
     fn find_offset_applies_c_side_effects() {
         let cfg = parse_from_iter(["cyanrip-rs", "-f", "-A", "-Q", "-s", "42"]).unwrap();
         assert!(cfg.settings.find_drive_offset);
@@ -789,6 +802,25 @@ mod tests {
             err,
             "Directory name scheme must contain {format} with multiple output formats!"
         );
+    }
+
+    #[test]
+    fn matches_upstream_short_option_surface() {
+        let cmd = CliArgs::command();
+        let got: BTreeSet<char> = cmd
+            .get_arguments()
+            .filter_map(|a| a.get_short())
+            .collect();
+
+        let expected: BTreeSet<char> = [
+            'd', 's', 'r', 'Z', 'S', 'p', 'P', 'O', 'H', 'E', 'W', 'K', 'o', 'b', 'D', 'F',
+            'L', 'M', 'l', 'T', 'I', 'J', 'a', 't', 'R', 'c', 'C', 'N', 'A', 'U', 'm', 'G',
+            'Q', 'f', 'Y',
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(got, expected);
     }
 
     #[test]

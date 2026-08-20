@@ -7,6 +7,8 @@ Documents:
 - [NEXT_STEPS.md](NEXT_STEPS.md): prioritized next tasks from the migration roadmap.
 - [CHANGELOG.md](CHANGELOG.md): chronological log of migration changes in this Rust repository.
 - [PARITY_NOTES.md](PARITY_NOTES.md): parity-focused notes and currently accepted differences.
+- [M6_REAL_HARDWARE_VALIDATION.md](M6_REAL_HARDWARE_VALIDATION.md): practical real-drive reliability scenarios and acceptance-notes template for M6 closure.
+- [M7_DIFFERENTIAL_HARNESS.md](M7_DIFFERENTIAL_HARNESS.md): first-slice differential testing against the C binary and M7 expansion steps.
 
 Primary planning references outside this folder:
 - [../MIGRATION_PLAN.md](../MIGRATION_PLAN.md)
