@@ -447,6 +447,11 @@ impl CliArgs {
             settings.disable_coverart_db = true;
         }
 
+        if settings.print_info_only {
+            // Info-only mode never performs ripping, so eject is effectively disabled.
+            settings.eject_on_success_rip = false;
+        }
+
         if settings.find_drive_offset {
             settings.disable_accurip = false;
             settings.disable_mb = true;
@@ -718,6 +723,13 @@ mod tests {
         assert!(cfg.settings.generate_cue_only);
         assert!(cfg.settings.disable_accurip);
         assert!(cfg.settings.disable_coverart_db);
+    }
+
+    #[test]
+    fn info_only_disables_eject_side_effect() {
+        let cfg = parse_from_iter(["cyanrip-rs", "-I", "-Q"]).unwrap();
+        assert!(cfg.settings.print_info_only);
+        assert!(!cfg.settings.eject_on_success_rip);
     }
 
     #[test]

@@ -205,4 +205,6 @@ Run-path progress:
 - Default `Run` full-rip bridge now supports TOC-like boundary overrides via track metadata (`start_lsn`, `frames`, `end_lsn`) with deterministic fallback.
 - Default `Run` image-source full-rip bridge now supports `CYANRIP_RS_IMAGE_TOC` boundary overrides (`track:start-end`), taking precedence over track metadata boundaries.
 - Default `Run` image-source full-rip bridge now derives per-track starts from CUE `INDEX 01` entries when running with `-d *.cue`, and computes frame spans from adjacent track starts.
+- `--find-offset` now uses real physical-drive TOC + AccurateRip lookup + sample-offset probing on linux `backend-libcdio-sys` builds, replacing the staged placeholder runtime.
+- `--find-offset` now mirrors core C search behavior more closely: multi-track offset confirmation, conflicting-offset replacement, and doubled-radius retries when no candidate is found.
 - Regression coverage added in [../tests/run_workflow_cli.rs](../tests/run_workflow_cli.rs) and `app` unit tests for this dispatch behavior.

@@ -1,7 +1,8 @@
 #![cfg(all(target_os = "linux", feature = "backend-libcdio-sys"))]
 
 use cyanrip_rs::cdda::linux_drive::{
-    open_linux_physical_drive, run_paranoia_on_linux_drive, run_paranoia_on_linux_drive_interruptible,
+    open_linux_physical_drive, read_drive_hwinfo, read_drive_toc_tracks, run_paranoia_on_linux_drive,
+    run_paranoia_on_linux_drive_interruptible,
 };
 use cyanrip_rs::cdda::paranoia::{RetryPolicy, RipEvent, RipState};
 use cyanrip_rs::cdda::reader::CddaFrameReader;
@@ -49,6 +50,41 @@ fn reads_audio_cd_toc_from_real_drive() {
     );
 
     unsafe { cdio_destroy(drive) };
+}
+
+#[test]
+#[ignore = "requires a real optical drive and an audio CD inserted beforehand"]
+fn reads_toc_entries_via_runtime_helper_and_iterates_tracks() {
+    let device = std::env::var("CYANRIP_CDROM_DEVICE").unwrap_or_else(|_| "/dev/cdrom".to_string());
+
+    let tracks = read_drive_toc_tracks(Some(&device)).unwrap_or_else(|err| {
+        panic!("failed to read TOC from {device}: {err:?}");
+    });
+
+    assert!(
+        !tracks.is_empty(),
+        "no TOC tracks found on {device}; ensure an audio CD is inserted beforehand"
+    );
+
+    let mut previous_end = -1i32;
+    for t in tracks {
+        assert!(t.number > 0, "invalid track number in TOC helper output");
+        assert!(
+            t.start_lsn >= 0 && t.end_lsn >= t.start_lsn,
+            "invalid LSN range for track {} on {}: {}..{}",
+            t.number,
+            device,
+            t.start_lsn,
+            t.end_lsn
+        );
+        assert!(
+            t.start_lsn > previous_end,
+            "non-monotonic TOC ranges at track {} on {}",
+            t.number,
+            device
+        );
+        previous_end = t.end_lsn;
+    }
 }
 
 #[test]
@@ -176,4 +212,74 @@ fn manual_media_change_scenario_reference() {
     panic!(
         "manual media-change scenario did not detect media change within timeout; ensure media was swapped/ejected during test"
     );
+}
+
+#[test]
+#[ignore = "requires a real optical drive and an audio CD inserted beforehand"]
+fn info_mode_report_contains_toc_section_with_track_details() {
+    use cyanrip_rs::{OutputFormat, Settings};
+    use cyanrip_rs::app::run_workflow;
+
+    let device = std::env::var("CYANRIP_CDROM_DEVICE").unwrap_or_else(|_| "/dev/cdrom".to_string());
+
+    let settings = Settings {
+        dev_path: Some(device.clone()),
+        print_info_only: true,
+        disable_accurip: true,
+        disable_mb: true,
+        disable_coverart_db: true,
+        outputs: vec![OutputFormat::Flac],
+        ..Settings::default()
+    };
+
+    let out = run_workflow(&settings)
+        .expect("info-only run_workflow should succeed")
+        .expect("info-only run_workflow should produce a report");
+
+    assert!(
+        out.contains("Drive used:"),
+        "report should contain drive info; output:\n{out}"
+    );
+    assert!(
+        out.contains("Disc tracks:"),
+        "report should contain disc tracks line; output:\n{out}"
+    );
+    assert!(
+        out.contains("Track 1 info:"),
+        "report should contain at least Track 1 info; output:\n{out}"
+    );
+    assert!(
+        out.contains("Start LSN:"),
+        "report should contain Start LSN line; output:\n{out}"
+    );
+    assert!(
+        out.contains("MusicBrainz URL:"),
+        "report should contain MusicBrainz submission URL; output:\n{out}"
+    );
+    assert!(
+        out.contains("DiscID:"),
+        "report should contain DiscID line; output:\n{out}"
+    );
+    assert!(
+        out.contains("CDDB ID:"),
+        "report should contain CDDB ID line; output:\n{out}"
+    );
+    assert!(
+        out.contains("Total time:"),
+        "report should contain total time; output:\n{out}"
+    );
+
+    // Drive hwinfo
+    let hw = read_drive_hwinfo(Some(&device));
+    assert!(
+        hw.is_some(),
+        "read_drive_hwinfo should succeed for an open drive; device: {device}"
+    );
+    if let Some(hw) = hw {
+        assert!(
+            out.contains(&hw.model),
+            "drive model '{}' should appear in Drive used: line; output:\n{out}",
+            hw.model
+        );
+    }
 }

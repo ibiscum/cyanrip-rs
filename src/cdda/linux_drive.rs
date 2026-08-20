@@ -4,6 +4,24 @@ use super::reader::{
     ParanoiaTrackRunResult, run_track_with_paranoia_heuristics_interruptible,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DriveTrackTocEntry {
+    pub number: u8,
+    pub start_lsn: i32,
+    pub end_lsn: i32,
+    pub track_is_data: bool,
+    /// LSN of the first frame of the pregap, None if no pregap or unavailable.
+    pub pregap_lsn: Option<i32>,
+}
+
+/// Hardware identification strings returned by the drive.
+#[derive(Debug, Clone)]
+pub struct DriveHwInfo {
+    pub vendor: String,
+    pub model: String,
+    pub revision: String,
+}
+
 pub trait LinuxDriveBackend {
     type Handle: Copy;
 
@@ -180,6 +198,146 @@ pub fn open_linux_physical_drive(
     device_path: Option<&str>,
 ) -> Result<LinuxPhysicalDriveReader<DefaultLinuxDriveBackend>, CddaReadError> {
     LinuxPhysicalDriveReader::new(DefaultLinuxDriveBackend::default(), device_path)
+}
+
+#[cfg(feature = "backend-libcdio-sys")]
+pub fn read_drive_toc_tracks(device_path: Option<&str>) -> Result<Vec<DriveTrackTocEntry>, CddaReadError> {
+    let ptr = if let Some(path) = device_path {
+        let c_path = std::ffi::CString::new(path).map_err(|_| {
+            CddaReadError::ReadFailed("device path contains interior NUL byte".to_string())
+        })?;
+        unsafe { libcdio_sys::cdio_open(c_path.as_ptr(), libcdio_sys::driver_id_t_DRIVER_UNKNOWN) }
+    } else {
+        unsafe { libcdio_sys::cdio_open(std::ptr::null(), libcdio_sys::driver_id_t_DRIVER_UNKNOWN) }
+    };
+
+    if ptr.is_null() {
+        return Err(CddaReadError::ReadFailed(
+            "failed to open cd drive via libcdio".to_string(),
+        ));
+    }
+
+    let mut out = Vec::new();
+    let result = (|| {
+        let first = unsafe { libcdio_sys::cdio_get_first_track_num(ptr) } as i32;
+        let count = unsafe { libcdio_sys::cdio_get_num_tracks(ptr) } as i32;
+        let leadout = unsafe {
+            libcdio_sys::cdio_get_track_lsn(
+                ptr,
+                libcdio_sys::cdio_track_enums_CDIO_CDROM_LEADOUT_TRACK as u8,
+            )
+        } as i32;
+        if first <= 0 || count <= 0 || leadout <= 0 || leadout == libcdio_sys::CDIO_INVALID_LSN as i32 {
+            return Err(CddaReadError::ReadFailed(
+                "invalid TOC values returned by drive".to_string(),
+            ));
+        }
+
+        for i in 0..count {
+            let track_number = (first + i) as u8;
+            let start = unsafe { libcdio_sys::cdio_get_track_lsn(ptr, track_number) } as i32;
+            if start == libcdio_sys::CDIO_INVALID_LSN as i32 || start < 0 {
+                return Err(CddaReadError::ReadFailed(format!(
+                    "invalid start LSN for track {track_number}"
+                )));
+            }
+
+            let next_start = if i + 1 < count {
+                let next = unsafe { libcdio_sys::cdio_get_track_lsn(ptr, (track_number + 1) as u8) } as i32;
+                if next == libcdio_sys::CDIO_INVALID_LSN as i32 || next <= start {
+                    return Err(CddaReadError::ReadFailed(format!(
+                        "invalid next-track LSN for track {track_number}"
+                    )));
+                }
+                next
+            } else {
+                if leadout <= start {
+                    return Err(CddaReadError::ReadFailed(format!(
+                        "invalid leadout LSN for track {track_number}"
+                    )));
+                }
+                leadout
+            };
+
+            let format = unsafe { libcdio_sys::cdio_get_track_format(ptr, track_number) };
+            let track_is_data = match format {
+                x if x == libcdio_sys::track_format_t_TRACK_FORMAT_AUDIO => false,
+                x if x == libcdio_sys::track_format_t_TRACK_FORMAT_CDI => true,
+                x if x == libcdio_sys::track_format_t_TRACK_FORMAT_XA => true,
+                x if x == libcdio_sys::track_format_t_TRACK_FORMAT_DATA => true,
+                x if x == libcdio_sys::track_format_t_TRACK_FORMAT_PSX => true,
+                x if x == libcdio_sys::track_format_t_TRACK_FORMAT_ERROR => {
+                    unsafe { libcdio_sys::cdio_get_track_green(ptr, track_number) }
+                }
+                _ => false,
+            };
+
+            let raw_pregap = unsafe { libcdio_sys::cdio_get_track_pregap_lsn(ptr, track_number) } as i32;
+            let pregap_lsn = if raw_pregap == libcdio_sys::CDIO_INVALID_LSN as i32 || raw_pregap == start {
+                None
+            } else {
+                Some(raw_pregap)
+            };
+
+            out.push(DriveTrackTocEntry {
+                number: track_number,
+                start_lsn: start,
+                end_lsn: next_start.saturating_sub(1),
+                track_is_data,
+                pregap_lsn,
+            });
+        }
+
+        Ok(())
+    })();
+
+    unsafe { libcdio_sys::cdio_destroy(ptr) };
+
+    result.map(|_| out)
+}
+
+#[cfg(not(feature = "backend-libcdio-sys"))]
+pub fn read_drive_toc_tracks(_device_path: Option<&str>) -> Result<Vec<DriveTrackTocEntry>, CddaReadError> {
+    Err(CddaReadError::ReadFailed(
+        "drive TOC access requires backend-libcdio-sys".to_string(),
+    ))
+}
+
+#[cfg(feature = "backend-libcdio-sys")]
+pub fn read_drive_hwinfo(device_path: Option<&str>) -> Option<DriveHwInfo> {
+    let ptr = if let Some(path) = device_path {
+        let c_path = std::ffi::CString::new(path).ok()?;
+        unsafe { libcdio_sys::cdio_open(c_path.as_ptr(), libcdio_sys::driver_id_t_DRIVER_UNKNOWN) }
+    } else {
+        unsafe { libcdio_sys::cdio_open(std::ptr::null(), libcdio_sys::driver_id_t_DRIVER_UNKNOWN) }
+    };
+    if ptr.is_null() {
+        return None;
+    }
+    let mut hwinfo = libcdio_sys::cdio_hwinfo_t {
+        psz_vendor: [0; 9],
+        psz_model: [0; 17],
+        psz_revision: [0; 5],
+    };
+    let ok = unsafe { libcdio_sys::cdio_get_hwinfo(ptr, &mut hwinfo) };
+    unsafe { libcdio_sys::cdio_destroy(ptr) };
+    if !ok {
+        return None;
+    }
+    let to_str = |arr: &[i8]| -> String {
+        let bytes: Vec<u8> = arr.iter().take_while(|&&b| b != 0).map(|&b| b as u8).collect();
+        String::from_utf8_lossy(&bytes).trim().to_string()
+    };
+    Some(DriveHwInfo {
+        vendor: to_str(&hwinfo.psz_vendor),
+        model: to_str(&hwinfo.psz_model),
+        revision: to_str(&hwinfo.psz_revision),
+    })
+}
+
+#[cfg(not(feature = "backend-libcdio-sys"))]
+pub fn read_drive_hwinfo(_device_path: Option<&str>) -> Option<DriveHwInfo> {
+    None
 }
 
 pub fn run_paranoia_on_linux_drive_with_backend<B, F>(

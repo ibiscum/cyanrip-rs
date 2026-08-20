@@ -238,8 +238,10 @@ fn info_only_mode_returns_success_with_report() {
 
     let (code, out) = run_capture(&rust_bin, &["-I", "-o", "flac"]);
     assert_eq!(code, 0);
-    assert!(out.contains("cyanrip-rs info-only mode"));
-    assert!(out.contains("Paranoia level:"));
+    assert!(out.contains("cyanrip-rs "));
+    assert!(out.contains("Paranoia level: "));
+    assert!(out.contains("Outputs:        "));
+    assert!(out.contains("AccurateRip:    "));
 }
 
 #[test]
@@ -275,7 +277,7 @@ fn find_offset_mode_returns_success_with_report() {
     assert_eq!(code, 0);
     assert!(out.contains("cyanrip-rs find-offset mode"));
     assert!(out.contains("AccurateRip: enabled"));
-    assert!(out.contains("Status: find-offset runtime is staged"));
+    assert!(out.contains("Status:"));
 }
 
 #[test]

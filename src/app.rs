@@ -23,6 +23,15 @@ use crate::naming::{NamingContext, build_track_relative_path};
 use crate::{DriverKind, OutputFormat, ReleaseSelection, Settings, open_dev_kind};
 
 const DEFAULT_SYNTHETIC_FRAME_COUNT: usize = 32;
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+const FIND_OFFSET_INITIAL_RADIUS_FRAMES: usize = 6;
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+const FIND_OFFSET_MAX_RADIUS_FRAMES: usize = 1536;
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+use tokio::runtime::Builder as TokioRuntimeBuilder;
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+use crate::metadata::accurip::{AccuRipDbEntry, compute_accurip_ids, find_accurip_confidence};
 
 #[cfg(all(target_os = "linux", feature = "cdda"))]
 fn paranoia_heuristics_for_level(paranoia_level: i32) -> ParanoiaHeuristicConfig {
@@ -55,35 +64,233 @@ impl std::fmt::Display for RunWorkflowError {
 
 impl std::error::Error for RunWorkflowError {}
 
-fn render_info_only_report(settings: &Settings) -> String {
+fn render_info_only_report(settings: &Settings, drive_used: Option<&str>) -> String {
     let mut lines = Vec::new();
-    lines.push("cyanrip-rs info-only mode".to_string());
+    lines.push(format!("cyanrip-rs {}", env!("CARGO_PKG_VERSION")));
+    if let Some(drive) = drive_used {
+        lines.push(format!("Drive used:     {drive}"));
+    }
     lines.push(format!(
-        "Device: {}",
+        "System device:  {}",
         settings.dev_path.as_deref().unwrap_or("<default>")
     ));
-    lines.push(format!("Offset (samples): {}", settings.offset));
+    let offset = settings.offset;
+    let offset_sign = if offset >= 0 { '+' } else { '-' };
+    let offset_abs = offset.unsigned_abs();
+    let offset_word = if offset_abs == 1 { "sample" } else { "samples" };
+    lines.push(format!("Offset:         {offset_sign}{offset_abs} {offset_word}"));
+    let ouf = settings.over_under_read_frames;
+    let ouf_label = if ouf < 0 { "Underread:      " } else { "Overread:       " };
+    let ouf_sign = if ouf >= 0 { '+' } else { '-' };
+    let ouf_abs = ouf.unsigned_abs();
+    let ouf_word = if ouf_abs == 1 { "frame" } else { "frames" };
+    lines.push(format!("{ouf_label}{ouf_sign}{ouf_abs} {ouf_word}"));
+    let mode_label = if ouf < 0 { "Underread mode: " } else { "Overread mode:  " };
+    let mode_value = if settings.overread_leadinout {
+        "read in lead-in/lead-out"
+    } else {
+        "fill with silence in lead-in/lead-out"
+    };
+    lines.push(format!("{mode_label}{mode_value}"));
+    lines.push("Speed:          default (unchangeable)".to_string());
+    let paranoia_str = if settings.paranoia_level == 0 {
+        "none".to_string()
+    } else if settings.paranoia_level >= 3 {
+        "max".to_string()
+    } else {
+        settings.paranoia_level.to_string()
+    };
+    lines.push(format!("Paranoia level: {paranoia_str}"));
+    lines.push(format!("Frame retries:  {}", settings.max_retries));
     lines.push(format!(
-        "Over/under-read frames: {}",
-        settings.over_under_read_frames
+        "HDCD decoding:  {}",
+        if settings.decode_hdcd { "enabled" } else { "disabled" }
     ));
-    lines.push(format!("Paranoia level: {}", settings.paranoia_level));
-    lines.push(format!("Max retries: {}", settings.max_retries));
-    lines.push(format!("Output formats configured: {}", settings.outputs.len()));
-    lines.push(format!("AccurateRip: {}", if settings.disable_accurip { "disabled" } else { "enabled" }));
-    lines.push(format!("MusicBrainz: {}", if settings.disable_mb { "disabled" } else { "enabled" }));
+    let output_names: Vec<&str> = settings
+        .outputs
+        .iter()
+        .filter_map(|o| match o {
+            OutputFormat::Flac => Some("flac"),
+            OutputFormat::Wav => Some("wav"),
+            OutputFormat::Mp3 => Some("mp3"),
+            OutputFormat::Tta => Some("tta"),
+            OutputFormat::Opus => Some("opus"),
+            OutputFormat::Aac => Some("aac"),
+            OutputFormat::AacMp4 => Some("aac_mp4"),
+            OutputFormat::Wavpack => Some("wavpack"),
+            OutputFormat::Vorbis => Some("vorbis"),
+            OutputFormat::Alac => Some("alac"),
+            OutputFormat::AlacMp4 => Some("alac_mp4"),
+            OutputFormat::OpusMp4 => Some("opus_mp4"),
+            OutputFormat::Pcm => Some("pcm"),
+        })
+        .collect();
     lines.push(format!(
-        "CoverArt DB: {}",
-        if settings.disable_coverart_db {
-            "disabled"
+        "Outputs:        {}",
+        if output_names.is_empty() {
+            "none".to_string()
         } else {
-            "enabled"
+            output_names.join(", ")
         }
+    ));
+    lines.push(format!(
+        "AccurateRip:    {}",
+        if settings.disable_accurip { "disabled" } else { "enabled" }
     ));
     lines.join("\n")
 }
 
-fn render_find_offset_report(settings: &Settings) -> String {
+#[cfg(any(test, all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+fn format_msf_from_frames(frames: i32) -> String {
+    let frames_non_negative = frames.max(0);
+    let total_seconds = frames_non_negative / 75;
+    let ff = frames_non_negative % 75;
+    let mm = total_seconds / 60;
+    let ss = total_seconds % 60;
+    format!("{mm:02}:{ss:02}.{ff:02}")
+}
+
+#[cfg(any(test, all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct InfoTocEntry {
+    number: u8,
+    start_lsn: i32,
+    end_lsn: i32,
+    track_is_data: bool,
+    pregap_lsn: Option<i32>,
+}
+
+#[cfg(any(test, all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+fn render_info_only_report_with_toc(
+    settings: &Settings,
+    drive_used: Option<&str>,
+    toc: &[InfoTocEntry],
+    discid: Option<(&str, &str, &str)>,
+) -> String {
+    let mut out = render_info_only_report(settings, drive_used);
+
+    if !toc.is_empty() {
+        let total_frames: i32 = toc
+            .iter()
+            .map(|t| t.end_lsn.saturating_sub(t.start_lsn).saturating_add(1))
+            .sum();
+        let tracks_to_rip = if settings.rip_indices.is_empty() {
+            "all".to_string()
+        } else {
+            settings
+                .rip_indices
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        out.push_str(&format!("\nDisc tracks:    {}\n", toc.len()));
+        out.push_str(&format!("Tracks to rip:  {tracks_to_rip}\n"));
+        if let Some((discid_str, cddb_str, mb_url)) = discid {
+            out.push_str(&format!("\nMusicBrainz URL:\n{mb_url}\n"));
+            out.push_str(&format!("DiscID:         {discid_str}\n"));
+            out.push_str(&format!("CDDB ID:        {cddb_str}\n"));
+        }
+        out.push_str(&format!("Total time:     {}\n", format_msf_from_frames(total_frames)));
+
+        out.push_str("\nTracks:\n");
+        for track in toc {
+            let frames = track.end_lsn.saturating_sub(track.start_lsn).saturating_add(1);
+            out.push_str(&format!("Track {} info:\n", track.number));
+            out.push_str("  Preemphasis:   none detected\n");
+            out.push_str("\n  Properties:\n");
+            if track.track_is_data {
+                let data_bytes = frames as u64 * 2352;
+                let mib = data_bytes as f64 / (1024.0 * 1024.0);
+                out.push_str(&format!("    Data bytes:  {data_bytes} ({mib:.2} Mib)\n"));
+                out.push_str(&format!("    Frames:      {frames}\n"));
+            } else {
+                // 588 stereo samples per CDDA frame (2352 bytes / 4 bytes per stereo sample)
+                let samples = frames as u64 * 588;
+                out.push_str(&format!("    Duration:    {}\n", format_msf_from_frames(frames)));
+                out.push_str(&format!("    Samples:     {samples}\n"));
+                out.push_str(&format!("    Frames:      {frames}\n"));
+                out.push_str("    Sample peak: 0.000000\n");
+            }
+            if let Some(pregap) = track.pregap_lsn {
+                let pregap_frames = track.start_lsn.saturating_sub(pregap);
+                out.push_str(&format!(
+                    "    Pregap LSN:  {pregap} (duration: {})\n",
+                    format_msf_from_frames(pregap_frames)
+                ));
+            } else {
+                out.push_str("    Pregap LSN:  none\n");
+            }
+            out.push_str(&format!("    Start LSN:   {}\n", track.start_lsn));
+            out.push_str(&format!("    End LSN:     {}\n", track.end_lsn));
+            out.push_str(&format!(
+                "  Accurip:       {}\n",
+                if settings.disable_accurip { "disabled" } else { "enabled" }
+            ));
+            out.push('\n');
+        }
+    }
+
+    out
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn run_info_only_mode(settings: &Settings) -> Result<String, RunWorkflowError> {
+    use crate::cdda::linux_drive::{read_drive_hwinfo, read_drive_toc_tracks};
+
+    let hw = read_drive_hwinfo(settings.dev_path.as_deref());
+    let drive_used: Option<String> = hw.map(|h| {
+        format!("{} {} (revision {})", h.vendor, h.model, h.revision)
+    });
+
+    let toc = read_drive_toc_tracks(settings.dev_path.as_deref())
+        .map_err(|e| RunWorkflowError::Runtime(format!("TOC read failed: {e:?}")))?;
+
+    let toc_entries: Vec<InfoTocEntry> = toc
+        .iter()
+        .map(|t| InfoTocEntry {
+            number: t.number,
+            start_lsn: t.start_lsn,
+            end_lsn: t.end_lsn,
+            track_is_data: t.track_is_data,
+            pregap_lsn: t.pregap_lsn,
+        })
+        .collect();
+
+    let discid_parts: Option<(String, String, String)> = if !toc_entries.is_empty() {
+        let disc_tracks: Vec<DiscTrack> = toc_entries
+            .iter()
+            .map(|t| DiscTrack {
+                number: t.number,
+                start_lsn: t.start_lsn,
+                end_lsn: t.end_lsn,
+                track_is_data: t.track_is_data,
+            })
+            .collect();
+        compute_discid(&disc_tracks)
+            .ok()
+            .map(|d| (d.musicbrainz_discid, d.cddb, d.mb_submission_url))
+    } else {
+        None
+    };
+
+    let report = render_info_only_report_with_toc(
+        settings,
+        drive_used.as_deref(),
+        &toc_entries,
+        discid_parts
+            .as_ref()
+            .map(|(id, cddb, url)| (id.as_str(), cddb.as_str(), url.as_str())),
+    );
+    Ok(report)
+}
+
+#[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+fn run_info_only_mode(settings: &Settings) -> Result<String, RunWorkflowError> {
+    Ok(render_info_only_report(settings, None))
+}
+
+fn render_find_offset_report_header(settings: &Settings) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push("cyanrip-rs find-offset mode".to_string());
     lines.push(format!(
@@ -95,8 +302,333 @@ fn render_find_offset_report(settings: &Settings) -> String {
     lines.push("CoverArt DB: disabled".to_string());
     lines.push("Eject on success: disabled".to_string());
     lines.push("Offset baseline (samples): 0".to_string());
-    lines.push("Status: find-offset runtime is staged; disc-driven computation wiring is pending".to_string());
-    lines.join("\n")
+    lines
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn accurip_v1_checksum(frame: &[u8]) -> u32 {
+    let mut sum = 0u32;
+    for (i, word) in frame.chunks_exact(4).enumerate() {
+        let value = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+        sum = sum.wrapping_add(value.wrapping_mul((i as u32).wrapping_add(1)));
+    }
+    sum
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn search_for_offset_in_window(
+    window: &[u8],
+    entries: &[AccuRipDbEntry],
+    max_confidence: i32,
+    bytes_radius: usize,
+    dir: i32,
+    guess: i32,
+) -> Option<i32> {
+    if window.len() < bytes_radius.saturating_mul(2).saturating_add(CDDA_FRAME_BYTES) {
+        return None;
+    }
+
+    let center = bytes_radius;
+    let check_offset = |offset: i32| -> Option<i32> {
+        let byte_off = (offset.unsigned_abs() as usize).saturating_mul(4);
+        if byte_off > bytes_radius {
+            return None;
+        }
+        let start = if offset < 0 {
+            center.checked_sub(byte_off)?
+        } else {
+            center.checked_add(byte_off)?
+        };
+        let end = start.checked_add(CDDA_FRAME_BYTES)?;
+        let frame = window.get(start..end)?;
+        let checksum = accurip_v1_checksum(frame);
+        if checksum == 0 {
+            return None;
+        }
+
+        let conf = find_accurip_confidence(AccuDbStatus::Found, entries, checksum, true);
+        if conf == max_confidence {
+            Some(offset)
+        } else {
+            None
+        }
+    };
+
+    if guess != 0 && let Some(found) = check_offset(guess) {
+        return Some(found);
+    }
+
+    let start_byte_off = if dir < 0 { 4 } else { 0 };
+    let mut byte_off = start_byte_off;
+    while byte_off < bytes_radius {
+        let offset = dir.saturating_mul((byte_off / 4) as i32);
+        if offset != guess && let Some(found) = check_offset(offset) {
+            return Some(found);
+        }
+        byte_off = byte_off.saturating_add(4);
+    }
+
+    None
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn apply_offset_candidate(
+    lines: &mut Vec<String>,
+    track_number: u32,
+    candidate_offset: i32,
+    offset_found_samples: &mut i32,
+    confidence: &mut i32,
+    has_more_tracks: bool,
+) {
+    let suffix = if has_more_tracks {
+        ", trying to confirm with another track"
+    } else {
+        ""
+    };
+
+    if *confidence == 0 {
+        *offset_found_samples = candidate_offset;
+        *confidence = 1;
+        lines.push(format!(
+            "Offset of {:+} found in track {}{}",
+            candidate_offset, track_number, suffix
+        ));
+    } else if *offset_found_samples == candidate_offset {
+        *confidence = confidence.saturating_add(1);
+        lines.push(format!(
+            "Offset of {:+} confirmed (confidence: {}) in track {}{}",
+            candidate_offset, *confidence, track_number, suffix
+        ));
+    } else {
+        lines.push(format!(
+            "New offset of {:+} found at track {}, scrapping old offset of {:+}{}",
+            candidate_offset, track_number, *offset_found_samples, suffix
+        ));
+        *offset_found_samples = candidate_offset;
+        *confidence = 1;
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn read_drive_window(
+    device_path: Option<&str>,
+    start_lsn: i32,
+    frame_count: usize,
+) -> Result<Vec<u8>, RunWorkflowError> {
+    use crate::cdda::linux_drive::open_linux_physical_drive;
+
+    let mut reader = open_linux_physical_drive(device_path)
+        .map_err(|e| RunWorkflowError::Runtime(format!("physical drive open failed: {e:?}")))?;
+    reader
+        .seek_frame(start_lsn)
+        .map_err(|e| RunWorkflowError::Runtime(format!("physical seek failed: {e:?}")))?;
+
+    let mut out = Vec::with_capacity(frame_count.saturating_mul(CDDA_FRAME_BYTES));
+    for _ in 0..frame_count {
+        let frame = reader
+            .read_frame()
+            .map_err(|e| RunWorkflowError::Runtime(format!("physical read failed: {e:?}")))?;
+        out.extend_from_slice(&frame);
+    }
+    Ok(out)
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn run_find_offset_mode(settings: &Settings) -> Result<String, RunWorkflowError> {
+    use crate::cdda::linux_drive::read_drive_toc_tracks;
+
+    let mut lines = render_find_offset_report_header(settings);
+    let toc = read_drive_toc_tracks(settings.dev_path.as_deref())
+        .map_err(|e| RunWorkflowError::Runtime(format!("TOC read failed: {e:?}")))?;
+    if toc.is_empty() {
+        lines.push("Status: no tracks detected on drive".to_string());
+        return Ok(lines.join("\n"));
+    }
+
+    let disc_tracks: Vec<DiscTrack> = toc
+        .iter()
+        .map(|t| DiscTrack {
+            number: t.number,
+            start_lsn: t.start_lsn,
+            end_lsn: t.end_lsn,
+            track_is_data: t.track_is_data,
+        })
+        .collect();
+    let ar_tracks: Vec<AccuRipTrackInput> = toc
+        .iter()
+        .map(|t| AccuRipTrackInput {
+            number: t.number as u32,
+            start_lsn: t.start_lsn as u32,
+            end_lsn: t.end_lsn as u32,
+            track_is_data: t.track_is_data,
+        })
+        .collect();
+
+    let discid = compute_discid(&disc_tracks)
+        .map_err(|e| RunWorkflowError::Runtime(format!("discid computation failed: {e:?}")))?;
+    let cddb_id = u32::from_str_radix(&discid.cddb, 16)
+        .map_err(|e| RunWorkflowError::Runtime(format!("cddb parse failed: {e}")))?;
+    let disc_ids = compute_accurip_ids(&ar_tracks)
+        .map_err(|e| RunWorkflowError::Runtime(format!("accurip id computation failed: {e:?}")))?;
+
+    let runtime = TokioRuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| RunWorkflowError::Runtime(format!("tokio runtime init failed: {e}")))?;
+    let service = AccuRipService::default();
+    let lookup = runtime
+        .block_on(service.lookup(&ar_tracks, cddb_id))
+        .map_err(|e| RunWorkflowError::Runtime(format!("accurip lookup failed: {e:?}")))?;
+
+    lines.push(format!("AccuRip request: {}", lookup.request_url));
+    lines.push(format!("AccuRip status: {:?}", lookup.status));
+
+    if lookup.status != AccuDbStatus::Found {
+        lines.push("Status: no matching AccurateRip entry; cannot determine drive offset".to_string());
+        return Ok(lines.join("\n"));
+    }
+
+    let mut radius = FIND_OFFSET_INITIAL_RADIUS_FRAMES;
+    let mut offset_found_confidence = 0i32;
+    let mut offset_found_samples = 0i32;
+    let mut had_any_ar = false;
+    let mut had_any_eligible_track = false;
+    let mut exhausted_radius = false;
+
+    while radius <= FIND_OFFSET_MAX_RADIUS_FRAMES {
+        let mut had_ar_this_radius = false;
+        let mut did_check_this_radius = false;
+
+        for (idx, track) in ar_tracks.iter().enumerate() {
+            let Some(matches) = lookup.track_matches.get(idx) else {
+                continue;
+            };
+            if matches.entries.is_empty() {
+                continue;
+            }
+            had_ar_this_radius = true;
+            had_any_ar = true;
+
+            let track_len = track.end_lsn.saturating_sub(track.start_lsn) as usize;
+            if track_len < (450 + radius) {
+                continue;
+            }
+            did_check_this_radius = true;
+            had_any_eligible_track = true;
+
+            let start_lsn = (track.start_lsn as i32)
+                .saturating_add(450)
+                .saturating_sub(radius as i32)
+                .max(0);
+            let window = read_drive_window(
+                settings.dev_path.as_deref(),
+                start_lsn,
+                2 * radius + 1,
+            )?;
+            let bytes_radius = radius.saturating_mul(CDDA_FRAME_BYTES);
+            let dir = if offset_found_confidence > 0 && offset_found_samples < 0 {
+                -1
+            } else {
+                1
+            };
+
+            let first_guess = if offset_found_confidence > 0 {
+                offset_found_samples
+            } else {
+                0
+            };
+            let found = search_for_offset_in_window(
+                &window,
+                &matches.entries,
+                matches.max_confidence,
+                bytes_radius,
+                dir,
+                first_guess,
+            )
+            .or_else(|| {
+                search_for_offset_in_window(
+                    &window,
+                    &matches.entries,
+                    matches.max_confidence,
+                    bytes_radius,
+                    -dir,
+                    0,
+                )
+            });
+
+            if let Some(offset) = found {
+                let has_more_tracks = idx + 1 < ar_tracks.len();
+                apply_offset_candidate(
+                    &mut lines,
+                    (idx + 1) as u32,
+                    offset,
+                    &mut offset_found_samples,
+                    &mut offset_found_confidence,
+                    has_more_tracks,
+                );
+            } else {
+                let suffix = if idx + 1 < ar_tracks.len() {
+                    ", trying another track"
+                } else {
+                    ""
+                };
+                lines.push(format!("Nothing found for track {}{}", idx + 1, suffix));
+            }
+        }
+
+        if offset_found_confidence > 0 {
+            break;
+        }
+
+        if !had_ar_this_radius || !did_check_this_radius {
+            break;
+        }
+
+        let next_radius = radius.saturating_mul(2);
+        if next_radius > FIND_OFFSET_MAX_RADIUS_FRAMES {
+            exhausted_radius = true;
+            break;
+        }
+
+        lines.push(format!(
+            "Was not able to find drive offset with a radius of {} frames, trying again with a larger radius...",
+            radius
+        ));
+        radius = next_radius;
+    }
+
+    if offset_found_confidence > 0 {
+        lines.push(format!(
+            "Status: drive offset found: {:+} samples (confidence {})",
+            offset_found_samples, offset_found_confidence
+        ));
+    } else if !had_any_ar {
+        lines.push("Status: no track had AccurateRip entry; cannot determine drive offset".to_string());
+    } else if !had_any_eligible_track {
+        lines.push("Status: no track was long enough for offset probing".to_string());
+    } else if exhausted_radius {
+        lines.push(format!(
+            "Status: unable to find drive offset up to radius {} frames",
+            FIND_OFFSET_MAX_RADIUS_FRAMES
+        ));
+    } else {
+        lines.push("Status: unable to find drive offset".to_string());
+    }
+
+    lines.push(format!("DiscID: {}", discid.musicbrainz_discid));
+    lines.push(format!("CDDB: {}", discid.cddb));
+    lines.push(format!("AccuRip IDs: {:08x}/{:08x}", disc_ids.id_type_1, disc_ids.id_type_2));
+    Ok(lines.join("\n"))
+}
+
+#[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+fn run_find_offset_mode(settings: &Settings) -> Result<String, RunWorkflowError> {
+    let mut lines = render_find_offset_report_header(settings);
+    lines.push(
+        "Status: unavailable in this build (requires linux + cdda + backend-libcdio-sys and an inserted audio CD)"
+            .to_string(),
+    );
+    Ok(lines.join("\n"))
 }
 
 fn parse_album_metadata_map(raw: Option<&str>) -> BTreeMap<String, String> {
@@ -891,11 +1423,11 @@ pub fn run_workflow(settings: &Settings) -> Result<Option<String>, RunWorkflowEr
     }
 
     if settings.find_drive_offset {
-        return Ok(Some(render_find_offset_report(settings)));
+        return run_find_offset_mode(settings).map(Some);
     }
 
     if settings.print_info_only {
-        return Ok(Some(render_info_only_report(settings)));
+        return run_info_only_mode(settings).map(Some);
     }
 
     if settings.generate_cue_only {
@@ -1537,8 +2069,55 @@ mod tests {
 
         let out = run_workflow(&settings).expect("info-only mode should be wired");
         let report = out.expect("info-only mode should produce a report");
-        assert!(report.contains("cyanrip-rs info-only mode"));
-        assert!(report.contains("Paranoia level:"));
+        assert!(report.contains("cyanrip-rs "));
+        assert!(report.contains("Paranoia level: "));
+        assert!(report.contains("Outputs:        "));
+        assert!(report.contains("AccurateRip:    "));
+    }
+
+    #[test]
+    fn format_msf_from_frames_uses_mm_ss_ff() {
+        assert_eq!(format_msf_from_frames(0), "00:00.00");
+        assert_eq!(format_msf_from_frames(75), "00:01.00");
+        assert_eq!(format_msf_from_frames(150), "00:02.00");
+        assert_eq!(format_msf_from_frames(4510), "01:00.10");
+    }
+
+    #[test]
+    fn info_only_report_with_toc_lists_tracks() {
+        let settings = Settings {
+            print_info_only: true,
+            outputs: vec![OutputFormat::Flac],
+            ..Settings::default()
+        };
+        let toc = vec![
+            InfoTocEntry {
+                number: 1,
+                start_lsn: 0,
+                end_lsn: 149,
+                track_is_data: false,
+                pregap_lsn: None,
+            },
+            InfoTocEntry {
+                number: 2,
+                start_lsn: 200,
+                end_lsn: 349,
+                track_is_data: true,
+                pregap_lsn: Some(192),
+            },
+        ];
+
+        let report = render_info_only_report_with_toc(&settings, None, &toc, None);
+        assert!(report.contains("Disc tracks:    2"));
+        assert!(report.contains("Track 1 info:"));
+        assert!(report.contains("    Duration:    00:02.00"));
+        assert!(report.contains("    Samples:     88200"));
+        assert!(report.contains("    Pregap LSN:  none"));
+        assert!(report.contains("    Start LSN:   0"));
+        assert!(report.contains("    End LSN:     149"));
+        assert!(report.contains("Track 2 info:"));
+        assert!(report.contains("    Data bytes:  "));
+        assert!(report.contains("    Pregap LSN:  192 (duration: 00:00.08)"));
     }
 
     #[test]

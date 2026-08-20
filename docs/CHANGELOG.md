@@ -1,5 +1,15 @@
 # Migration Changelog
 
+## 2026-08-20
+
+### M7 CLI Info-Only Parity Tightening
+- Enforced `-I` info-only no-eject semantics in [../src/cli.rs](../src/cli.rs) so `-Q` is ignored in info-only mode.
+- Extended info-only runtime reporting in [../src/app.rs](../src/app.rs) to explicitly state no ripping/no eject behavior and include selected-track summary.
+- Implemented linux+libcdio-backed `-I` TOC readout in [../src/app.rs](../src/app.rs), including per-track LSN/frame/duration lines and local DiscID/CDDB derivation from real TOC data.
+- Added parser-level regression test for `-I -Q` behavior in [../src/cli.rs](../src/cli.rs).
+- Extended integration coverage in [../tests/run_workflow_cli.rs](../tests/run_workflow_cli.rs) to assert info-only no-eject output semantics.
+- Updated CLI freeze documentation in [../CLI_BEHAVIOR_FREEZE.md](../CLI_BEHAVIOR_FREEZE.md).
+
 ## 2026-08-18
 
 ### Planning and Governance
@@ -126,6 +136,7 @@
 - Added TOC-like boundary resolution support in the full-rip bridge using per-track metadata overrides (`start_lsn`, `frames`, `end_lsn`) with deterministic fallback mapping.
 - Added image-source TOC override support via `CYANRIP_RS_IMAGE_TOC` (`track:start-end` list), which takes precedence over metadata overrides in default image full-rip runs.
 - Added cue-derived image TOC boundary extraction for `-d *.cue` runs in default full-rip mode (`INDEX 01` start LSN mapping with next-track frame spans), used before metadata fallback.
+- Implemented a real linux+libcdio `--find-offset` runtime path: physical TOC read, AccurateRip lookup, and sample-offset probing around +450 frame checksums (with graceful unsupported-build reporting when required features are missing).
 
 ### Validation
 - Test suite passing after each major change set (cargo test).

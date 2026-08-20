@@ -134,11 +134,14 @@ Status update:
 18. Continue M7 run-workflow implementations after dispatch slice.
 - Harden default reader-selected full-rip bridge into production workflow (true TOC-derived track boundaries instead of bridge-calculated synthetic windows, robust physical-drive error handling, and final output/log parity details).
 - Keep synthetic full-rip path as hardware-free regression path while production flow matures.
+- Continue find-offset parity hardening using [FIND_OFFSET_PARITY_PLAN.md](FIND_OFFSET_PARITY_PLAN.md).
 
 Status update:
 - Image-source cue-derived TOC boundaries (`-d *.cue`, `INDEX 01` based) in default run path: done
 - Image-source explicit override path (`CYANRIP_RS_IMAGE_TOC`) with precedence over metadata/defaults: done
 - Physical-source true TOC extraction and boundary/error parity hardening: pending
+- Find-offset core parity (multi-track confirmation, conflicting-offset replacement, and radius escalation): done
+- Find-offset remaining parity: mixed-mode TOC track typing and differential-vs-C validation pending
 
 ## Paranoia Mode Design Reference
 

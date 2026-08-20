@@ -1,6 +1,6 @@
 # CLI Behavior Freeze (M0)
 
-Last updated: 2026-08-18
+Last updated: 2026-08-20
 
 This document freezes CLI expectations for defaults, validation behavior, and error messages.
 
@@ -103,6 +103,9 @@ Precedence is frozen:
 3. otherwise normal Run validation path is applied.
 
 Side-effect behavior is frozen:
+- info-only (-I):
+- eject_on_success_rip = false
+
 - cue-only (-J):
 - disable_accurip = true
 - disable_coverart_db = true
