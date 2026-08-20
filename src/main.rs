@@ -1,4 +1,7 @@
 use cyanrip_rs::cli::{CliAction, SUPPORTED_OUTPUTS_HELP, parse_from_env};
+use cyanrip_rs::fun512::{LogVerify, verify_log_path};
+use cyanrip_rs::app::run_workflow;
+use std::path::Path;
 
 fn main() {
     let cfg = match parse_from_env() {
@@ -16,17 +19,44 @@ fn main() {
         }
         CliAction::VerifyLog => {
             let path = cfg.settings.verify_log.as_deref().unwrap_or("<missing>");
-            println!("verify-log mode requested for: {path}");
-            return;
+            match verify_log_path(Path::new(path)) {
+                LogVerify::Valid => {
+                    println!("Log \"{path}\" checksum valid.");
+                    return;
+                }
+                LogVerify::Mismatch => {
+                    println!(
+                        "Log \"{path}\" checksum mismatch, the file has been modified!"
+                    );
+                }
+                LogVerify::TrailingData => {
+                    println!(
+                        "Log \"{path}\" has data after the checksum, the file has been modified!"
+                    );
+                }
+                LogVerify::NoChecksum => {
+                    println!("No FUN512 checksum found in \"{path}\"!");
+                }
+                LogVerify::IoError => {
+                    println!("Couldn't read \"{path}\"!");
+                }
+            }
+            std::process::exit(1);
         }
-        CliAction::Run => {}
+        CliAction::Run => {
+            match run_workflow(&cfg.settings) {
+                Ok(Some(msg)) => {
+                    println!("{msg}");
+                    return;
+                }
+                Ok(None) => {
+                    return;
+                }
+                Err(err) => {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                }
+            }
+        }
     }
-
-    let settings = cfg.settings;
-    println!(
-        "cyanrip-rs CLI mapped: outputs={}, paranoia={}, retries={}",
-        settings.outputs.len(),
-        settings.paranoia_level,
-        settings.max_retries
-    );
 }
