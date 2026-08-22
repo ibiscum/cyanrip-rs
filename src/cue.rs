@@ -95,7 +95,7 @@ pub fn render_cue(doc: &CueDoc) -> String {
         &mut out,
         &doc.meta,
         "musicbrainz_discid",
-        "REM MUSICBRAINZ_ID \"{}\"\n",
+        "REM MUSICBRAINZ_DISCID \"{}\"\n",
     );
     write_meta_line_if_present(&mut out, &doc.meta, "cddb", "REM DISCID \"{}\"\n");
 
@@ -167,12 +167,12 @@ pub fn render_cue(doc: &CueDoc) -> String {
             out.push_str("    FLAGS PRE\n");
         }
 
-        if let Some(drop_start) = t.dropped_pregap_start {
-            if drop_start != t.start_lsn {
-                out.push_str(&format!("    PREGAP {}\n", time_00));
-                out.push_str(&format!("    INDEX 01 {}\n", time_01));
-                continue;
-            }
+        if let Some(drop_start) = t.dropped_pregap_start
+            && drop_start != t.start_lsn
+        {
+            out.push_str(&format!("    PREGAP {}\n", time_00));
+            out.push_str(&format!("    INDEX 01 {}\n", time_01));
+            continue;
         }
 
         if t.merged_pregap_end.is_some() {

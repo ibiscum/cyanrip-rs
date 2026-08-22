@@ -44,11 +44,10 @@ pub struct CliArgs {
     #[arg(
         short = 's',
         long = "offset",
-        default_value_t = 0,
         help_heading = "Ripping options",
         help = "CD drive offset in samples"
     )]
-    pub offset: i32,
+    pub offset: Option<i32>,
 
     #[arg(
         short = 'r',
@@ -367,8 +366,10 @@ impl CliArgs {
             return Ok(CliConfig { settings, action });
         }
 
-        settings.offset = self.offset;
-        settings.over_under_read_frames = calc_over_under_read_frames(self.offset);
+        let offset = self.offset.unwrap_or(0);
+        settings.offset = offset;
+        settings.offset_is_set = self.offset.is_some();
+        settings.over_under_read_frames = calc_over_under_read_frames(offset);
         settings.max_retries = self.retries;
         settings.ripping_retries = self.repeat_rips;
         settings.speed = self.speed;
@@ -719,10 +720,17 @@ mod tests {
 
     #[test]
     fn cue_only_applies_c_side_effects() {
-        let cfg = parse_from_iter(["cyanrip-rs", "-J"]).unwrap();
+        let cfg = parse_from_iter(["cyanrip-rs", "-J", "-s", "0"]).unwrap();
         assert!(cfg.settings.generate_cue_only);
         assert!(cfg.settings.disable_accurip);
         assert!(cfg.settings.disable_coverart_db);
+    }
+
+    #[test]
+    fn cue_only_without_offset_keeps_offset_unset_marker() {
+        let cfg = parse_from_iter(["cyanrip-rs", "-J"]).unwrap();
+        assert!(cfg.settings.generate_cue_only);
+        assert!(!cfg.settings.offset_is_set);
     }
 
     #[test]

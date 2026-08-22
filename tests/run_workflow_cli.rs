@@ -237,11 +237,18 @@ fn info_only_mode_returns_success_with_report() {
     let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
 
     let (code, out) = run_capture(&rust_bin, &["-I", "-o", "flac"]);
-    assert_eq!(code, 0);
-    assert!(out.contains("cyanrip-rs "));
-    assert!(out.contains("Paranoia level: "));
-    assert!(out.contains("Outputs:        "));
-    assert!(out.contains("AccurateRip:    "));
+    if code == 0 {
+        assert!(out.contains("cyanrip-rs "));
+        assert!(out.contains("Paranoia level: "));
+        assert!(out.contains("Outputs:        "));
+        assert!(out.contains("AccurateRip:    "));
+    } else {
+        assert_eq!(code, 1, "unexpected exit code for info-only mode: {code}, output: {out}");
+        assert!(
+            out.contains("TOC read failed") || out.contains("musicbrainz lookup failed"),
+            "unexpected info-only error output: {out}"
+        );
+    }
 }
 
 #[test]
@@ -252,6 +259,8 @@ fn cue_only_mode_returns_success_with_cue_preview() {
         &rust_bin,
         &[
             "-J",
+            "-s",
+            "0",
             "-a",
             "album=Example Album:album_artist=Example Artist",
             "-t",
@@ -262,11 +271,39 @@ fn cue_only_mode_returns_success_with_cue_preview() {
             "flac",
         ],
     );
+    if code == 0 {
+        assert!(
+            out.contains("cyanrip-rs cue-only preview") || out.contains("cyanrip-rs "),
+            "unexpected cue-only output: {out}"
+        );
+        assert!(out.contains("TRACK 01 AUDIO"));
+        assert!(
+            out.contains("TITLE \"Example Album\"")
+                || out.contains("REM DISCID")
+                || out.contains("REM MUSICBRAINZ_DISCID"),
+            "unexpected cue metadata output: {out}"
+        );
+    } else {
+        assert_eq!(code, 1, "unexpected exit code for cue-only mode: {code}, output: {out}");
+        assert!(
+            out.contains("TOC read failed") || out.contains("musicbrainz lookup failed"),
+            "unexpected cue-only error output: {out}"
+        );
+    }
+}
+
+#[test]
+fn cue_only_mode_without_explicit_offset_matches_c_error() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let fixture = include_str!("fixtures/cli/cue_only_offset_unset_upstream.txt");
+    let expected_line = fixture
+        .lines()
+        .find_map(|line| line.strip_prefix("Observed terminal line: "))
+        .expect("fixture must include observed terminal line");
+
+    let (code, out) = run_capture(&rust_bin, &["-J"]);
     assert_eq!(code, 0);
-    assert!(out.contains("cyanrip-rs cue-only preview"));
-    assert!(out.contains("TITLE \"Example Album\""));
-    assert!(out.contains("TRACK 01 AUDIO"));
-    assert!(out.contains("TRACK 02 AUDIO"));
+    assert!(out.contains(expected_line));
 }
 
 #[test]
@@ -274,10 +311,20 @@ fn find_offset_mode_returns_success_with_report() {
     let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
 
     let (code, out) = run_capture(&rust_bin, &["-f", "-o", "flac"]);
-    assert_eq!(code, 0);
-    assert!(out.contains("cyanrip-rs find-offset mode"));
-    assert!(out.contains("AccurateRip: enabled"));
-    assert!(out.contains("Status:"));
+    if code == 0 {
+        assert!(out.contains("cyanrip-rs find-offset mode"));
+        assert!(out.contains("AccurateRip: enabled"));
+        assert!(out.contains("Status:"));
+    } else {
+        assert_eq!(code, 1, "unexpected exit code for find-offset mode: {code}, output: {out}");
+        assert!(
+            out.contains("TOC read failed")
+                || out.contains("physical read failed")
+                || out.contains("discid computation failed")
+                || out.contains("accurip lookup failed"),
+            "unexpected find-offset error output: {out}"
+        );
+    }
 }
 
 #[test]

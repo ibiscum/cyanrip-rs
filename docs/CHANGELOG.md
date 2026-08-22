@@ -12,6 +12,12 @@
 - Added ignored hardware integration coverage for `-I` multi-release selection error-path behavior in [../tests/linux_physical_drive_validation.rs](../tests/linux_physical_drive_validation.rs).
 - Added helper runner script [../scripts/run_m7_info_release_disambiguation.sh](../scripts/run_m7_info_release_disambiguation.sh) to execute the two ignored `run_workflow_cli` disambiguation tests (`-R 1` and `-R 2`) with required features and environment defaults.
 
+### M7 Cue-Only Offset-Unset Parity
+- Matched upstream `-J` behavior for unset offset: runtime now returns the message `Offset is unset! To continue with an offset of 0, run with -s 0!` and exits successfully (instead of a parse-time failure).
+- Added `Settings.offset_is_set` tracking in [../src/lib.rs](../src/lib.rs) and CLI mapping in [../src/cli.rs](../src/cli.rs) to preserve explicit-vs-default offset intent.
+- Added cue-only runtime parity handling in [../src/app.rs](../src/app.rs).
+- Added recorded upstream observation fixture [../tests/fixtures/cli/cue_only_offset_unset_upstream.txt](../tests/fixtures/cli/cue_only_offset_unset_upstream.txt) and integration regression assertion in [../tests/run_workflow_cli.rs](../tests/run_workflow_cli.rs).
+
 ### Architecture Documentation: `cyanrip_ctx` Replacement
 - Added [ARCHITECTURE_CONTEXT_MAPPING.md](ARCHITECTURE_CONTEXT_MAPPING.md) documenting how upstream monolithic context responsibilities are represented in Rust through `Settings`, workflow-level typed inputs/outputs, metadata orchestration structs, TOC/drive structs, and output flow structs.
 - Documented rationale for avoiding a new monolithic mutable context in favor of explicit ownership boundaries and feature-localized state.

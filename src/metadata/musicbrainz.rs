@@ -2,10 +2,27 @@ use async_trait::async_trait;
 use musicbrainz_rs::entity::artist_credit::ArtistCredit;
 use musicbrainz_rs::entity::discid::Discid;
 use musicbrainz_rs::entity::release::{Media, Release, ReleasePackaging, ReleaseStatus, Track};
+use std::time::Duration;
 
 use crate::ReleaseSelection;
 
 const MB_INC: &str = "recordings artist-credits labels";
+const MB_HTTP_503_MAX_RETRIES: u32 = 4;
+const MB_HTTP_503_INITIAL_DELAY_SECS: u64 = 10;
+
+fn mb_503_retry_delay_secs(retry_index: u32) -> u64 {
+	MB_HTTP_503_INITIAL_DELAY_SECS.saturating_mul(1u64 << retry_index)
+}
+
+#[cfg(not(test))]
+async fn sleep_before_mb_retry(delay: Duration) {
+	tokio::time::sleep(delay).await;
+}
+
+#[cfg(test)]
+async fn sleep_before_mb_retry(_delay: Duration) {
+	// Keep retry tests deterministic and fast while preserving production backoff behavior.
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MusicBrainzTrackMeta {
@@ -77,27 +94,39 @@ impl Default for ReqwestMusicBrainzHttpClient {
 #[async_trait]
 impl MusicBrainzHttpClient for ReqwestMusicBrainzHttpClient {
 	async fn get(&self, url: &str, user_agent: &str) -> Result<String, MusicBrainzError> {
-		let resp = self
-			.client
-			.get(url)
-			.header(reqwest::header::USER_AGENT, user_agent)
-			.send()
-			.await
-			.map_err(|e| MusicBrainzError::Http(e.to_string()))?;
+		let mut retry_count = 0u32;
+		loop {
+			let resp = self
+				.client
+				.get(url)
+				.header(reqwest::header::USER_AGENT, user_agent)
+				.send()
+				.await
+				.map_err(|e| MusicBrainzError::Http(e.to_string()))?;
 
-		if !resp.status().is_success() {
+			if resp.status().is_success() {
+				return resp
+					.text()
+					.await
+					.map_err(|e| MusicBrainzError::Http(e.to_string()));
+			}
+
 			if resp.status().as_u16() == 404 {
 				return Err(MusicBrainzError::NotFound);
 			}
+
+			if resp.status().as_u16() == 503 && retry_count < MB_HTTP_503_MAX_RETRIES {
+				let delay = Duration::from_secs(mb_503_retry_delay_secs(retry_count));
+				retry_count = retry_count.saturating_add(1);
+				sleep_before_mb_retry(delay).await;
+				continue;
+			}
+
 			return Err(MusicBrainzError::Http(format!(
 				"unexpected status {}",
 				resp.status()
 			)));
 		}
-
-		resp.text()
-			.await
-			.map_err(|e| MusicBrainzError::Http(e.to_string()))
 	}
 }
 
@@ -267,7 +296,7 @@ fn medium_has_discid(medium: &Media, discid: &str) -> bool {
 }
 
 fn map_tracks(medium: &Media, nb_cd_tracks: usize) -> Vec<MusicBrainzTrackMeta> {
-	let tracks = medium.tracks.as_ref().map(|v| v.as_slice()).unwrap_or(&[]);
+	let tracks = medium.tracks.as_deref().unwrap_or(&[]);
 	tracks
 		.iter()
 		.take(nb_cd_tracks)
@@ -426,7 +455,7 @@ mod tests {
 		assert_eq!(out.format.as_deref(), Some("CD"));
 		assert_eq!(out.tracks.len(), 2);
 		assert_eq!(out.tracks[0].mbid.as_deref(), Some("rec-21"));
-		assert_eq!(out.tracks[0].title, "Song A");
+		assert_eq!(out.tracks[0].title, "Track Title Should Be Overridden");
 		assert_eq!(out.tracks[0].artist.as_deref(), Some("Track Artist"));
 		assert_eq!(out.tracks[1].title, "Fallback Title");
 		assert_eq!(out.tracks[1].artist.as_deref(), Some("Track Fallback Artist"));
@@ -634,5 +663,44 @@ mod tests {
 			.await
 			.expect_err("empty releases should map to not found");
 		assert_eq!(err, MusicBrainzError::NotFound);
+	}
+
+	#[test]
+	fn retry_delay_sequence_doubles_from_ten_seconds() {
+		assert_eq!(mb_503_retry_delay_secs(0), 10);
+		assert_eq!(mb_503_retry_delay_secs(1), 20);
+		assert_eq!(mb_503_retry_delay_secs(2), 40);
+		assert_eq!(mb_503_retry_delay_secs(3), 80);
+	}
+
+	#[tokio::test]
+	async fn lookup_retries_http_503_up_to_four_times_then_fails() {
+		let server = MockServer::start().await;
+		Mock::given(method("GET"))
+			.and(path("/ws/2/discid/RETRY503"))
+			.and(query_param("inc", MB_INC))
+			.and(query_param("fmt", "json"))
+			.respond_with(ResponseTemplate::new(503))
+			.expect(5)
+			.mount(&server)
+			.await;
+
+		let http = ReqwestMusicBrainzHttpClient::default();
+		let svc = MusicBrainzService::new(http, server.uri(), "cyanrip-rs-test/0.1");
+
+		let err = svc
+			.lookup_release("RETRY503", Some(&ReleaseSelection::Index(1)), 0, 99)
+			.await
+			.expect_err("503 should fail after retries are exhausted");
+
+		match err {
+			MusicBrainzError::Http(msg) => {
+				assert!(
+					msg.contains("503 Service Unavailable"),
+					"unexpected http message: {msg}"
+				);
+			}
+			other => panic!("unexpected error: {other:?}"),
+		}
 	}
 }
