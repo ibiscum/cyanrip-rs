@@ -1,5 +1,21 @@
 # Migration Changelog
 
+## 2026-08-22
+
+### M7 Info-Only MusicBrainz Release Selection Parity
+- Updated `-I` info-only workflow in [../src/app.rs](../src/app.rs) to perform MusicBrainz release resolution when DiscID is available and MusicBrainz is enabled.
+- Implemented upstream-compatible multi-release behavior for info-only mode: if multiple releases are returned and no `-R` selection is provided, the run now exits non-zero with a candidate list and explicit `-R` guidance.
+- Extended `-I` reporting in [../src/app.rs](../src/app.rs) to include selected MusicBrainz release-level fields (`Release ID`, `Album`, `Album artist`, `Disc number`, `Total discs`) and per-track metadata blocks when a release is selected via `-R`.
+- Added captured live DiscID request/response fixtures in [../tests/fixtures/musicbrainz/discid_bkkz_multi_release_live.request.txt](../tests/fixtures/musicbrainz/discid_bkkz_multi_release_live.request.txt), [../tests/fixtures/musicbrainz/discid_bkkz_multi_release_live.json](../tests/fixtures/musicbrainz/discid_bkkz_multi_release_live.json), and [../tests/fixtures/musicbrainz/discid_bkkz_multi_release_live.upstream_output.txt](../tests/fixtures/musicbrainz/discid_bkkz_multi_release_live.upstream_output.txt).
+- Added regression coverage for the captured live fixture in [../src/metadata/musicbrainz.rs](../src/metadata/musicbrainz.rs), including release-index 1 and release-index 2 mapping assertions.
+- Added ignored hardware/network integration coverage in [../tests/run_workflow_cli.rs](../tests/run_workflow_cli.rs) for `-I -R 1` and `-I -R 2`, asserting release-specific metadata differences in output.
+- Added ignored hardware integration coverage for `-I` multi-release selection error-path behavior in [../tests/linux_physical_drive_validation.rs](../tests/linux_physical_drive_validation.rs).
+- Added helper runner script [../scripts/run_m7_info_release_disambiguation.sh](../scripts/run_m7_info_release_disambiguation.sh) to execute the two ignored `run_workflow_cli` disambiguation tests (`-R 1` and `-R 2`) with required features and environment defaults.
+
+### Architecture Documentation: `cyanrip_ctx` Replacement
+- Added [ARCHITECTURE_CONTEXT_MAPPING.md](ARCHITECTURE_CONTEXT_MAPPING.md) documenting how upstream monolithic context responsibilities are represented in Rust through `Settings`, workflow-level typed inputs/outputs, metadata orchestration structs, TOC/drive structs, and output flow structs.
+- Documented rationale for avoiding a new monolithic mutable context in favor of explicit ownership boundaries and feature-localized state.
+
 ## 2026-08-20
 
 ### M7 CLI Info-Only Parity Tightening

@@ -1,0 +1,6 @@
+Multiple releases found in database for DiscID BKkzOxbdODYWFIOEEZ3b.b_nm64-:
+    1 (ID: 4c63d77d-6348-4ae1-9616-f25e625fa0d7): Power Classics! Classical Music for Your Active Lifestyle, Volume 3 (US) (1994)
+    2 (ID: 1f504c20-5423-47fb-8d25-243ce749b92c): Power Classics! Classical Music for your Active Lifestyle (US) (10 CDs)
+
+Please specify which release to use by adding the -R argument with an index or ID.
+Exit code: 1

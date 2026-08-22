@@ -349,3 +349,85 @@ fn synthetic_full_rip_mode_supports_image_reader_source() {
     let cleanup = fs::remove_dir_all(&output_root);
     assert!(cleanup.is_ok(), "synthetic output root should be removable");
 }
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn assert_info_mode_release_selection_succeeds(
+    release_index: &str,
+    expected_release_id: &str,
+    expected_album: &str,
+    expected_disc_number: i32,
+    expected_total_discs: i32,
+) {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let device = std::env::var("CYANRIP_CDROM_DEVICE").unwrap_or_else(|_| "/dev/cdrom".to_string());
+    let expected_discid = std::env::var("CYANRIP_EXPECT_MULTI_RELEASE_DISCID")
+        .unwrap_or_else(|_| "BKkzOxbdODYWFIOEEZ3b.b_nm64-".to_string());
+
+    let (code, out) = run_capture(
+        &rust_bin,
+        &["-I", "-d", &device, "-R", release_index, "-o", "flac"],
+    );
+
+    assert_eq!(
+        code, 0,
+        "expected -I -R {release_index} to succeed on multi-release disc; output:\n{out}"
+    );
+    assert!(
+        out.contains(&format!("DiscID:         {expected_discid}")),
+        "expected DiscID line for {expected_discid}; output:\n{out}"
+    );
+    assert!(
+        out.contains(&format!("Release ID:     {expected_release_id}")),
+        "expected Release ID {expected_release_id}; output:\n{out}"
+    );
+    assert!(
+        out.contains(&format!("Album:          {expected_album}")),
+        "expected album '{expected_album}'; output:\n{out}"
+    );
+    assert!(
+        out.contains(&format!("Disc number:    {expected_disc_number}")),
+        "expected disc number {expected_disc_number}; output:\n{out}"
+    );
+    assert!(
+        out.contains(&format!("Total discs:    {expected_total_discs}")),
+        "expected total discs {expected_total_discs}; output:\n{out}"
+    );
+    assert!(
+        out.contains("  Metadata:"),
+        "expected per-track metadata block in info output; output:\n{out}"
+    );
+    assert!(
+        out.contains("MusicBrainz URL:"),
+        "expected info-only report output after disambiguation; output:\n{out}"
+    );
+    assert!(
+        !out.contains("Multiple releases found in database for DiscID"),
+        "did not expect multi-release prompt when -R is provided; output:\n{out}"
+    );
+}
+
+#[test]
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+#[ignore = "requires a real optical drive, network access, and the captured multi-release disc inserted"]
+fn info_only_mode_with_release_index_1_disambiguates_musicbrainz_result() {
+    assert_info_mode_release_selection_succeeds(
+        "1",
+        "4c63d77d-6348-4ae1-9616-f25e625fa0d7",
+        "Power Classics! Classical Music for Your Active Lifestyle, Volume 3",
+        1,
+        1,
+    );
+}
+
+#[test]
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+#[ignore = "requires a real optical drive, network access, and the captured multi-release disc inserted"]
+fn info_only_mode_with_release_index_2_disambiguates_musicbrainz_result() {
+    assert_info_mode_release_selection_succeeds(
+        "2",
+        "1f504c20-5423-47fb-8d25-243ce749b92c",
+        "Power Classics! Classical Music for your Active Lifestyle",
+        3,
+        10,
+    );
+}

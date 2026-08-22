@@ -279,13 +279,16 @@ fn map_track(track: &Track) -> MusicBrainzTrackMeta {
 	let rec = track.recording.as_ref();
 
 	let mbid = rec.map(|r| r.id.clone());
-	let title = rec
-		.map(|r| r.title.clone())
-		.unwrap_or_else(|| track.title.clone());
+	let title = if !track.title.trim().is_empty() {
+		track.title.clone()
+	} else {
+		rec.map(|r| r.title.clone()).unwrap_or_default()
+	};
 
-	let artist = rec
-		.and_then(|r| r.artist_credit.as_ref())
-		.or(track.artist_credit.as_ref())
+	let artist = track
+		.artist_credit
+		.as_ref()
+		.or_else(|| rec.and_then(|r| r.artist_credit.as_ref()))
 		.map(|ac| join_artist_credit(ac))
 		.filter(|s| !s.is_empty());
 
@@ -456,6 +459,115 @@ mod tests {
 			}
 			other => panic!("unexpected error: {other:?}"),
 		}
+	}
+
+	#[tokio::test]
+	async fn lookup_live_multi_release_fixture_requires_selection() {
+		let server = MockServer::start().await;
+		Mock::given(method("GET"))
+			.and(path("/ws/2/discid/BKkzOxbdODYWFIOEEZ3b.b_nm64-"))
+			.and(query_param("inc", MB_INC))
+			.and(query_param("fmt", "json"))
+			.respond_with(
+				ResponseTemplate::new(200)
+					.set_body_string(fixture("discid_bkkz_multi_release_live.json")),
+			)
+			.mount(&server)
+			.await;
+
+		let http = ReqwestMusicBrainzHttpClient::default();
+		let svc = MusicBrainzService::new(http, server.uri(), "cyanrip-rs-test/0.1");
+
+		let err = svc
+			.lookup_release("BKkzOxbdODYWFIOEEZ3b.b_nm64-", None, 0, 99)
+			.await
+			.expect_err("should require release selection for captured live fixture");
+
+		match err {
+			MusicBrainzError::MultipleReleases(list) => {
+				assert!(
+					list.len() >= 2,
+					"expected at least two releases in live fixture"
+				);
+				assert_eq!(list[0].id, "4c63d77d-6348-4ae1-9616-f25e625fa0d7");
+				assert_eq!(list[1].id, "1f504c20-5423-47fb-8d25-243ce749b92c");
+			}
+			other => panic!("unexpected error: {other:?}"),
+		}
+	}
+
+	#[tokio::test]
+	async fn lookup_live_multi_release_fixture_release_index_1_maps_expected_release() {
+		let server = MockServer::start().await;
+		Mock::given(method("GET"))
+			.and(path("/ws/2/discid/BKkzOxbdODYWFIOEEZ3b.b_nm64-"))
+			.and(query_param("inc", MB_INC))
+			.and(query_param("fmt", "json"))
+			.respond_with(
+				ResponseTemplate::new(200)
+					.set_body_string(fixture("discid_bkkz_multi_release_live.json")),
+			)
+			.mount(&server)
+			.await;
+
+		let http = ReqwestMusicBrainzHttpClient::default();
+		let svc = MusicBrainzService::new(http, server.uri(), "cyanrip-rs-test/0.1");
+
+		let out = svc
+			.lookup_release(
+				"BKkzOxbdODYWFIOEEZ3b.b_nm64-",
+				Some(&ReleaseSelection::Index(1)),
+				0,
+				10,
+			)
+			.await
+			.expect("lookup should succeed");
+
+		assert_eq!(out.musicbrainz_albumid, "4c63d77d-6348-4ae1-9616-f25e625fa0d7");
+		assert_eq!(
+			out.album,
+			"Power Classics! Classical Music for Your Active Lifestyle, Volume 3"
+		);
+		assert_eq!(out.totaldiscs, 1);
+		assert_eq!(out.discnumber, Some(1));
+		assert_eq!(out.barcode.as_deref(), Some("018111414920"));
+	}
+
+	#[tokio::test]
+	async fn lookup_live_multi_release_fixture_release_index_2_maps_expected_release() {
+		let server = MockServer::start().await;
+		Mock::given(method("GET"))
+			.and(path("/ws/2/discid/BKkzOxbdODYWFIOEEZ3b.b_nm64-"))
+			.and(query_param("inc", MB_INC))
+			.and(query_param("fmt", "json"))
+			.respond_with(
+				ResponseTemplate::new(200)
+					.set_body_string(fixture("discid_bkkz_multi_release_live.json")),
+			)
+			.mount(&server)
+			.await;
+
+		let http = ReqwestMusicBrainzHttpClient::default();
+		let svc = MusicBrainzService::new(http, server.uri(), "cyanrip-rs-test/0.1");
+
+		let out = svc
+			.lookup_release(
+				"BKkzOxbdODYWFIOEEZ3b.b_nm64-",
+				Some(&ReleaseSelection::Index(2)),
+				0,
+				10,
+			)
+			.await
+			.expect("lookup should succeed");
+
+		assert_eq!(out.musicbrainz_albumid, "1f504c20-5423-47fb-8d25-243ce749b92c");
+		assert_eq!(
+			out.album,
+			"Power Classics! Classical Music for your Active Lifestyle"
+		);
+		assert_eq!(out.totaldiscs, 10);
+		assert_eq!(out.discnumber, Some(3));
+		assert_eq!(out.barcode.as_deref(), Some("018111584821"));
 	}
 
 	#[tokio::test]

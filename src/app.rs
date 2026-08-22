@@ -18,7 +18,11 @@ use crate::metadata::accurip::{
 };
 use crate::metadata::coverart::{CoverArtError, CoverArtImage, CoverArtService};
 use crate::metadata::discid::{DiscTrack, DiscidInfo, compute_discid};
-use crate::metadata::musicbrainz::{MusicBrainzError, MusicBrainzReleaseMeta, MusicBrainzService};
+use crate::metadata::musicbrainz::{
+    MusicBrainzError, MusicBrainzReleaseMeta, MusicBrainzService, ReleaseSummary,
+};
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+use crate::metadata::musicbrainz::ReqwestMusicBrainzHttpClient;
 use crate::naming::{NamingContext, build_track_relative_path};
 use crate::{DriverKind, OutputFormat, ReleaseSelection, Settings, open_dev_kind};
 
@@ -140,6 +144,44 @@ fn render_info_only_report(settings: &Settings, drive_used: Option<&str>) -> Str
     lines.join("\n")
 }
 
+fn format_musicbrainz_release_summary_for_info_mode(idx: usize, release: &ReleaseSummary) -> String {
+    let mut suffix = String::new();
+    if let Some(country) = release.country.as_deref().filter(|c| !c.trim().is_empty()) {
+        suffix.push_str(&format!(" ({country})"));
+    }
+    if let Some(date) = release.date.as_deref().filter(|d| !d.trim().is_empty()) {
+        suffix.push_str(&format!(" ({date})"));
+    }
+    if release.num_cds > 1 {
+        suffix.push_str(&format!(" ({} CDs)", release.num_cds));
+    }
+
+    format!(
+        "    {} (ID: {}): {}{}",
+        idx.saturating_add(1),
+        release.id,
+        release.album,
+        suffix
+    )
+}
+
+fn format_musicbrainz_multiple_releases_message(discid: &str, releases: &[ReleaseSummary]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "Multiple releases found in database for DiscID {discid}:\n"
+    ));
+    for (idx, release) in releases.iter().enumerate() {
+        out.push_str(&format!(
+            "{}\n",
+            format_musicbrainz_release_summary_for_info_mode(idx, release)
+        ));
+    }
+    out.push_str(
+        "\nPlease specify which release to use by adding the -R argument with an index or ID.",
+    );
+    out
+}
+
 #[cfg(any(test, all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
 fn format_msf_from_frames(frames: i32) -> String {
     let frames_non_negative = frames.max(0);
@@ -166,6 +208,7 @@ fn render_info_only_report_with_toc(
     drive_used: Option<&str>,
     toc: &[InfoTocEntry],
     discid: Option<(&str, &str, &str)>,
+    musicbrainz: Option<&MusicBrainzReleaseMeta>,
 ) -> String {
     let mut out = render_info_only_report(settings, drive_used);
 
@@ -189,7 +232,23 @@ fn render_info_only_report_with_toc(
         if let Some((discid_str, cddb_str, mb_url)) = discid {
             out.push_str(&format!("\nMusicBrainz URL:\n{mb_url}\n"));
             out.push_str(&format!("DiscID:         {discid_str}\n"));
+            if let Some(release) = musicbrainz {
+                out.push_str(&format!(
+                    "Release ID:     {}\n",
+                    release.musicbrainz_albumid
+                ));
+            }
             out.push_str(&format!("CDDB ID:        {cddb_str}\n"));
+        }
+        if let Some(release) = musicbrainz {
+            out.push_str(&format!("Album:          {}\n", release.album));
+            if let Some(album_artist) = release.album_artist.as_deref() {
+                out.push_str(&format!("Album artist:   {album_artist}\n"));
+            }
+            if let Some(discnumber) = release.discnumber {
+                out.push_str(&format!("Disc number:    {discnumber}\n"));
+            }
+            out.push_str(&format!("Total discs:    {}\n", release.totaldiscs));
         }
         out.push_str(&format!("Total time:     {}\n", format_msf_from_frames(total_frames)));
 
@@ -227,6 +286,66 @@ fn render_info_only_report_with_toc(
                 "  Accurip:       {}\n",
                 if settings.disable_accurip { "disabled" } else { "enabled" }
             ));
+
+            if let (Some(release), Some((discid_str, cddb_str, _))) = (musicbrainz, discid)
+                && let Some(track_meta) = release
+                    .tracks
+                    .get(track.number.saturating_sub(1) as usize)
+            {
+                out.push_str("\n  Metadata:\n");
+                if let Some(mbid) = track_meta.mbid.as_deref() {
+                    out.push_str(&format!("    mbid:                {mbid}\n"));
+                }
+                out.push_str(&format!("    title:               {}\n", track_meta.title));
+                if let Some(artist) = track_meta.artist.as_deref() {
+                    out.push_str(&format!("    artist:              {artist}\n"));
+                }
+                out.push_str(&format!("    track:               {}\n", track.number));
+                out.push_str(&format!("    tracktotal:          {}\n", toc.len()));
+                out.push_str("    disc_mcn:            0000000000000\n");
+                out.push_str(&format!("    musicbrainz_discid:  {discid_str}\n"));
+                out.push_str(&format!("    cddb:                {cddb_str}\n"));
+                if let Some(media) = release.format.as_deref() {
+                    out.push_str(&format!("    media:               {media}\n"));
+                }
+                out.push_str("    comment:             cyanrip 0.9.4-rc2\n");
+                if let Some(date) = release.date.as_deref().filter(|d| !d.trim().is_empty()) {
+                    out.push_str(&format!("    date:                {date}\n"));
+                }
+                out.push_str(&format!(
+                    "    musicbrainz_albumid: {}\n",
+                    release.musicbrainz_albumid
+                ));
+                out.push_str(&format!("    album:               {}\n", release.album));
+                if let Some(barcode) = release.barcode.as_deref() {
+                    out.push_str(&format!("    barcode:             {barcode}\n"));
+                }
+                if let Some(packaging) = release.packaging.as_deref() {
+                    out.push_str(&format!("    packaging:           {packaging}\n"));
+                }
+                if let Some(country) = release.country.as_deref() {
+                    out.push_str(&format!("    country:             {country}\n"));
+                }
+                if let Some(releasestatus) = release.releasestatus.as_deref() {
+                    out.push_str(&format!("    releasestatus:       {releasestatus}\n"));
+                }
+                if let Some(catalognumber) = release.catalognumber.as_deref() {
+                    out.push_str(&format!("    catalognumber:       {catalognumber}\n"));
+                }
+                if let Some(label) = release.label.as_deref() {
+                    out.push_str(&format!("    label:               {label}\n"));
+                }
+                if let Some(album_artist) = release.album_artist.as_deref() {
+                    out.push_str(&format!("    album_artist:        {album_artist}\n"));
+                }
+                out.push_str(&format!("    totaldiscs:          {}\n", release.totaldiscs));
+                if let Some(disc) = release.discnumber {
+                    out.push_str(&format!("    disc:                {disc}\n"));
+                }
+                if let Some(format) = release.format.as_deref() {
+                    out.push_str(&format!("    format:              {format}\n"));
+                }
+            }
             out.push('\n');
         }
     }
@@ -274,6 +393,41 @@ fn run_info_only_mode(settings: &Settings) -> Result<String, RunWorkflowError> {
         None
     };
 
+    let mut selected_release: Option<MusicBrainzReleaseMeta> = None;
+
+    if !settings.disable_mb && let Some((discid, _, _)) = discid_parts.as_ref() {
+        let runtime = TokioRuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| RunWorkflowError::Runtime(format!("tokio runtime init failed: {e}")))?;
+
+        let service = MusicBrainzService::new(
+            ReqwestMusicBrainzHttpClient::default(),
+            "https://musicbrainz.org",
+            "cyanrip-rs/0.1",
+        );
+
+        match runtime.block_on(service.lookup_release(
+            discid,
+            settings.release.as_ref(),
+            settings.discnumber,
+            toc_entries.len(),
+        )) {
+            Ok(release) => selected_release = Some(release),
+            Err(MusicBrainzError::NotFound) => {}
+            Err(MusicBrainzError::MultipleReleases(candidates)) => {
+                return Err(RunWorkflowError::Runtime(
+                    format_musicbrainz_multiple_releases_message(discid, &candidates),
+                ));
+            }
+            Err(e) => {
+                return Err(RunWorkflowError::Runtime(format!(
+                    "musicbrainz lookup failed: {e:?}"
+                )));
+            }
+        }
+    }
+
     let report = render_info_only_report_with_toc(
         settings,
         drive_used.as_deref(),
@@ -281,13 +435,14 @@ fn run_info_only_mode(settings: &Settings) -> Result<String, RunWorkflowError> {
         discid_parts
             .as_ref()
             .map(|(id, cddb, url)| (id.as_str(), cddb.as_str(), url.as_str())),
+        selected_release.as_ref(),
     );
     Ok(report)
 }
 
 #[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
 fn run_info_only_mode(settings: &Settings) -> Result<String, RunWorkflowError> {
-    Ok(render_info_only_report(settings, None))
+    Ok(render_info_only_report_with_toc(settings, None, &[], None, None))
 }
 
 fn render_find_offset_report_header(settings: &Settings) -> Vec<String> {
@@ -2107,7 +2262,7 @@ mod tests {
             },
         ];
 
-        let report = render_info_only_report_with_toc(&settings, None, &toc, None);
+        let report = render_info_only_report_with_toc(&settings, None, &toc, None, None);
         assert!(report.contains("Disc tracks:    2"));
         assert!(report.contains("Track 1 info:"));
         assert!(report.contains("    Duration:    00:02.00"));
@@ -2118,6 +2273,106 @@ mod tests {
         assert!(report.contains("Track 2 info:"));
         assert!(report.contains("    Data bytes:  "));
         assert!(report.contains("    Pregap LSN:  192 (duration: 00:00.08)"));
+    }
+
+    #[test]
+    fn info_only_report_with_release_includes_metadata_block() {
+        let settings = Settings {
+            print_info_only: true,
+            outputs: vec![OutputFormat::Flac],
+            ..Settings::default()
+        };
+        let toc = vec![InfoTocEntry {
+            number: 1,
+            start_lsn: 0,
+            end_lsn: 149,
+            track_is_data: false,
+            pregap_lsn: None,
+        }];
+        let release = MusicBrainzReleaseMeta {
+            musicbrainz_albumid: "rel-1".to_string(),
+            releasecomment: None,
+            date: Some("1994".to_string()),
+            album: "Album One".to_string(),
+            barcode: Some("1234567890123".to_string()),
+            packaging: Some("Other".to_string()),
+            country: Some("US".to_string()),
+            releasestatus: Some("Official".to_string()),
+            catalognumber: Some("15 848".to_string()),
+            label: Some("Label X".to_string()),
+            album_artist: Some("Various Artists".to_string()),
+            discname: None,
+            format: Some("CD".to_string()),
+            discnumber: Some(3),
+            totaldiscs: 10,
+            tracks: vec![crate::metadata::musicbrainz::MusicBrainzTrackMeta {
+                mbid: Some("track-1-mbid".to_string()),
+                title: "Ride of the Valkyries".to_string(),
+                artist: Some("Richard Wagner".to_string()),
+            }],
+        };
+
+        let report = render_info_only_report_with_toc(
+            &settings,
+            None,
+            &toc,
+            Some((
+                "BKkzOxbdODYWFIOEEZ3b.b_nm64-",
+                "8E0F310A",
+                "https://musicbrainz.org/cdtoc/attach?toc=...",
+            )),
+            Some(&release),
+        );
+
+        assert!(report.contains("Release ID:     rel-1"));
+        assert!(report.contains("Album:          Album One"));
+        assert!(report.contains("Disc number:    3"));
+        assert!(report.contains("Total discs:    10"));
+        assert!(report.contains("  Metadata:"));
+        assert!(report.contains("    mbid:                track-1-mbid"));
+        assert!(report.contains("    disc_mcn:            0000000000000"));
+        assert!(report.contains("    comment:             cyanrip 0.9.4-rc2"));
+        assert!(report.contains("    date:                1994"));
+        assert!(report.contains("    musicbrainz_albumid: rel-1"));
+        assert!(report.contains("    packaging:           Other"));
+        assert!(report.contains("    totaldiscs:          10"));
+        assert!(report.contains("    disc:                3"));
+
+        let comment_pos = report
+            .find("    comment:             cyanrip 0.9.4-rc2")
+            .expect("comment line should exist");
+        let albumid_pos = report
+            .find("    musicbrainz_albumid: rel-1")
+            .expect("musicbrainz_albumid line should exist");
+        assert!(comment_pos < albumid_pos, "comment should be before musicbrainz_albumid");
+    }
+
+    #[test]
+    fn formats_musicbrainz_multiple_release_prompt_for_info_mode() {
+        let releases = vec![
+            ReleaseSummary {
+                id: "id-1".to_string(),
+                album: "Album One".to_string(),
+                disambiguation: None,
+                country: Some("US".to_string()),
+                date: Some("1994".to_string()),
+                num_cds: 1,
+            },
+            ReleaseSummary {
+                id: "id-2".to_string(),
+                album: "Album Two".to_string(),
+                disambiguation: None,
+                country: Some("US".to_string()),
+                date: None,
+                num_cds: 10,
+            },
+        ];
+
+        let msg = format_musicbrainz_multiple_releases_message("TESTDISC", &releases);
+        assert!(msg.contains("Multiple releases found in database for DiscID TESTDISC:"));
+        assert!(msg.contains("1 (ID: id-1): Album One (US) (1994)"));
+        assert!(msg.contains("2 (ID: id-2): Album Two (US) (10 CDs)"));
+        assert!(msg.contains("Please specify which release to use by adding the -R argument"));
     }
 
     #[test]
