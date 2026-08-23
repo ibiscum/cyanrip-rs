@@ -224,6 +224,43 @@ fn run_mode_full_rip_bridge_honors_cue_toc_boundaries() {
 }
 
 #[test]
+fn run_mode_full_rip_bridge_applies_offset_frame_expansion() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let output_root = unique_temp_output_root();
+    let output_root_s = output_root.to_string_lossy().to_string();
+    let cue_path = unique_temp_cue_path();
+
+    fs::write(
+        &cue_path,
+        "FILE \"disc.bin\" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    INDEX 01 00:00:10\n",
+    )
+    .expect("cue fixture should be writable");
+
+    let cue_path_s = cue_path.to_string_lossy().to_string();
+    let (code, out) = run_capture_with_env(
+        &rust_bin,
+        &["-o", "wav", "-d", &cue_path_s, "-l", "1", "-s", "103"],
+        &[("CYANRIP_RS_OUTPUT_ROOT", &output_root_s)],
+    );
+
+    assert_eq!(code, 0);
+    assert!(out.contains("Source: image"));
+    assert!(out.contains("TRACK 1 START_LSN 0 FRAMES 11"));
+    assert!(out.contains("Written files: 1"));
+
+    let file_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("FILE ")).collect();
+    assert_eq!(file_lines.len(), 1, "expected one written file, output: {out}");
+    for line in file_lines {
+        let path = line.trim_start_matches("FILE ").trim();
+        assert!(PathBuf::from(path).exists(), "expected output file to exist: {path}");
+    }
+
+    let _ = fs::remove_file(&cue_path);
+    let cleanup = fs::remove_dir_all(&output_root);
+    assert!(cleanup.is_ok(), "offset-expansion full-rip bridge output root should be removable");
+}
+
+#[test]
 fn run_mode_rejects_unimplemented_codec_early() {
     let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
 
@@ -312,9 +349,14 @@ fn find_offset_mode_returns_success_with_report() {
 
     let (code, out) = run_capture(&rust_bin, &["-f", "-o", "flac"]);
     if code == 0 {
-        assert!(out.contains("cyanrip-rs find-offset mode"));
-        assert!(out.contains("AccurateRip: enabled"));
-        assert!(out.contains("Status:"));
+        assert!(out.contains("Searching for drive offset"));
+        assert!(
+            out.contains("Drive offset of ")
+                || out.contains("No track had AccuRip entry")
+                || out.contains("No track was long enough")
+                || out.contains("Was not able to find drive offset"),
+            "unexpected find-offset terminal output: {out}"
+        );
     } else {
         assert_eq!(code, 1, "unexpected exit code for find-offset mode: {code}, output: {out}");
         assert!(
@@ -325,6 +367,50 @@ fn find_offset_mode_returns_success_with_report() {
             "unexpected find-offset error output: {out}"
         );
     }
+}
+
+#[test]
+fn find_offset_mode_prints_c_style_preflight_lines() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+
+    let (code, out) = run_capture(&rust_bin, &["-f", "-o", "flac"]);
+    if code == 0 {
+        assert!(out.contains("Searching for drive offset"));
+        assert!(out.contains("Checking "));
+        assert!(out.contains(" for cdrom..."));
+        assert!(out.contains("Opening drive..."));
+    } else {
+        assert_eq!(code, 1, "unexpected exit code for find-offset mode: {code}, output: {out}");
+        assert!(
+            out.contains("TOC read failed")
+                || out.contains("physical read failed")
+                || out.contains("discid computation failed")
+                || out.contains("accurip lookup failed"),
+            "unexpected find-offset error output: {out}"
+        );
+        assert!(
+            out.contains("Searching for drive offset")
+                && out.contains("Checking ")
+                && out.contains(" for cdrom...")
+                && out.contains("Opening drive..."),
+            "find-offset preflight lines should still be printed before runtime errors: {out}"
+        );
+    }
+}
+
+#[test]
+fn find_offset_mode_bypasses_cue_only_offset_unset_guard() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+
+    let (_code, out) = run_capture(&rust_bin, &["-f", "-J", "-o", "flac"]);
+    assert!(
+        !out.contains("Offset is unset! To continue with an offset of 0, run with -s 0!"),
+        "-f should bypass cue-only offset guard, output: {out}"
+    );
+    assert!(
+        out.contains("Searching for drive offset"),
+        "-f should keep find-offset execution path, output: {out}"
+    );
 }
 
 #[test]

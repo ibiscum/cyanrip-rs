@@ -458,6 +458,7 @@ impl CliArgs {
             settings.disable_mb = true;
             settings.disable_coverart_db = true;
             settings.offset = 0;
+            settings.offset_is_set = false;
             settings.over_under_read_frames = 0;
             settings.eject_on_success_rip = false;
         }
@@ -748,6 +749,7 @@ mod tests {
         assert!(cfg.settings.disable_mb);
         assert!(cfg.settings.disable_coverart_db);
         assert_eq!(cfg.settings.offset, 0);
+        assert!(!cfg.settings.offset_is_set);
         assert_eq!(cfg.settings.over_under_read_frames, 0);
         assert!(!cfg.settings.eject_on_success_rip);
     }
