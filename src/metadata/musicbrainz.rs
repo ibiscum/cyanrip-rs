@@ -2,10 +2,27 @@ use async_trait::async_trait;
 use musicbrainz_rs::entity::artist_credit::ArtistCredit;
 use musicbrainz_rs::entity::discid::Discid;
 use musicbrainz_rs::entity::release::{Media, Release, ReleasePackaging, ReleaseStatus, Track};
+use std::time::Duration;
 
 use crate::ReleaseSelection;
 
 const MB_INC: &str = "recordings artist-credits labels";
+const MB_HTTP_503_MAX_RETRIES: u32 = 4;
+const MB_HTTP_503_INITIAL_DELAY_SECS: u64 = 10;
+
+fn mb_503_retry_delay_secs(retry_index: u32) -> u64 {
+	MB_HTTP_503_INITIAL_DELAY_SECS.saturating_mul(1u64 << retry_index)
+}
+
+#[cfg(not(test))]
+async fn sleep_before_mb_retry(delay: Duration) {
+	tokio::time::sleep(delay).await;
+}
+
+#[cfg(test)]
+async fn sleep_before_mb_retry(_delay: Duration) {
+	// Keep retry tests deterministic and fast while preserving production backoff behavior.
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MusicBrainzTrackMeta {
@@ -77,27 +94,39 @@ impl Default for ReqwestMusicBrainzHttpClient {
 #[async_trait]
 impl MusicBrainzHttpClient for ReqwestMusicBrainzHttpClient {
 	async fn get(&self, url: &str, user_agent: &str) -> Result<String, MusicBrainzError> {
-		let resp = self
-			.client
-			.get(url)
-			.header(reqwest::header::USER_AGENT, user_agent)
-			.send()
-			.await
-			.map_err(|e| MusicBrainzError::Http(e.to_string()))?;
+		let mut retry_count = 0u32;
+		loop {
+			let resp = self
+				.client
+				.get(url)
+				.header(reqwest::header::USER_AGENT, user_agent)
+				.send()
+				.await
+				.map_err(|e| MusicBrainzError::Http(e.to_string()))?;
 
-		if !resp.status().is_success() {
+			if resp.status().is_success() {
+				return resp
+					.text()
+					.await
+					.map_err(|e| MusicBrainzError::Http(e.to_string()));
+			}
+
 			if resp.status().as_u16() == 404 {
 				return Err(MusicBrainzError::NotFound);
 			}
+
+			if resp.status().as_u16() == 503 && retry_count < MB_HTTP_503_MAX_RETRIES {
+				let delay = Duration::from_secs(mb_503_retry_delay_secs(retry_count));
+				retry_count = retry_count.saturating_add(1);
+				sleep_before_mb_retry(delay).await;
+				continue;
+			}
+
 			return Err(MusicBrainzError::Http(format!(
 				"unexpected status {}",
 				resp.status()
 			)));
 		}
-
-		resp.text()
-			.await
-			.map_err(|e| MusicBrainzError::Http(e.to_string()))
 	}
 }
 
@@ -267,7 +296,7 @@ fn medium_has_discid(medium: &Media, discid: &str) -> bool {
 }
 
 fn map_tracks(medium: &Media, nb_cd_tracks: usize) -> Vec<MusicBrainzTrackMeta> {
-	let tracks = medium.tracks.as_ref().map(|v| v.as_slice()).unwrap_or(&[]);
+	let tracks = medium.tracks.as_deref().unwrap_or(&[]);
 	tracks
 		.iter()
 		.take(nb_cd_tracks)
@@ -279,13 +308,16 @@ fn map_track(track: &Track) -> MusicBrainzTrackMeta {
 	let rec = track.recording.as_ref();
 
 	let mbid = rec.map(|r| r.id.clone());
-	let title = rec
-		.map(|r| r.title.clone())
-		.unwrap_or_else(|| track.title.clone());
+	let title = if !track.title.trim().is_empty() {
+		track.title.clone()
+	} else {
+		rec.map(|r| r.title.clone()).unwrap_or_default()
+	};
 
-	let artist = rec
-		.and_then(|r| r.artist_credit.as_ref())
-		.or(track.artist_credit.as_ref())
+	let artist = track
+		.artist_credit
+		.as_ref()
+		.or_else(|| rec.and_then(|r| r.artist_credit.as_ref()))
 		.map(|ac| join_artist_credit(ac))
 		.filter(|s| !s.is_empty());
 
@@ -423,7 +455,7 @@ mod tests {
 		assert_eq!(out.format.as_deref(), Some("CD"));
 		assert_eq!(out.tracks.len(), 2);
 		assert_eq!(out.tracks[0].mbid.as_deref(), Some("rec-21"));
-		assert_eq!(out.tracks[0].title, "Song A");
+		assert_eq!(out.tracks[0].title, "Track Title Should Be Overridden");
 		assert_eq!(out.tracks[0].artist.as_deref(), Some("Track Artist"));
 		assert_eq!(out.tracks[1].title, "Fallback Title");
 		assert_eq!(out.tracks[1].artist.as_deref(), Some("Track Fallback Artist"));
@@ -456,6 +488,115 @@ mod tests {
 			}
 			other => panic!("unexpected error: {other:?}"),
 		}
+	}
+
+	#[tokio::test]
+	async fn lookup_live_multi_release_fixture_requires_selection() {
+		let server = MockServer::start().await;
+		Mock::given(method("GET"))
+			.and(path("/ws/2/discid/BKkzOxbdODYWFIOEEZ3b.b_nm64-"))
+			.and(query_param("inc", MB_INC))
+			.and(query_param("fmt", "json"))
+			.respond_with(
+				ResponseTemplate::new(200)
+					.set_body_string(fixture("discid_bkkz_multi_release_live.json")),
+			)
+			.mount(&server)
+			.await;
+
+		let http = ReqwestMusicBrainzHttpClient::default();
+		let svc = MusicBrainzService::new(http, server.uri(), "cyanrip-rs-test/0.1");
+
+		let err = svc
+			.lookup_release("BKkzOxbdODYWFIOEEZ3b.b_nm64-", None, 0, 99)
+			.await
+			.expect_err("should require release selection for captured live fixture");
+
+		match err {
+			MusicBrainzError::MultipleReleases(list) => {
+				assert!(
+					list.len() >= 2,
+					"expected at least two releases in live fixture"
+				);
+				assert_eq!(list[0].id, "4c63d77d-6348-4ae1-9616-f25e625fa0d7");
+				assert_eq!(list[1].id, "1f504c20-5423-47fb-8d25-243ce749b92c");
+			}
+			other => panic!("unexpected error: {other:?}"),
+		}
+	}
+
+	#[tokio::test]
+	async fn lookup_live_multi_release_fixture_release_index_1_maps_expected_release() {
+		let server = MockServer::start().await;
+		Mock::given(method("GET"))
+			.and(path("/ws/2/discid/BKkzOxbdODYWFIOEEZ3b.b_nm64-"))
+			.and(query_param("inc", MB_INC))
+			.and(query_param("fmt", "json"))
+			.respond_with(
+				ResponseTemplate::new(200)
+					.set_body_string(fixture("discid_bkkz_multi_release_live.json")),
+			)
+			.mount(&server)
+			.await;
+
+		let http = ReqwestMusicBrainzHttpClient::default();
+		let svc = MusicBrainzService::new(http, server.uri(), "cyanrip-rs-test/0.1");
+
+		let out = svc
+			.lookup_release(
+				"BKkzOxbdODYWFIOEEZ3b.b_nm64-",
+				Some(&ReleaseSelection::Index(1)),
+				0,
+				10,
+			)
+			.await
+			.expect("lookup should succeed");
+
+		assert_eq!(out.musicbrainz_albumid, "4c63d77d-6348-4ae1-9616-f25e625fa0d7");
+		assert_eq!(
+			out.album,
+			"Power Classics! Classical Music for Your Active Lifestyle, Volume 3"
+		);
+		assert_eq!(out.totaldiscs, 1);
+		assert_eq!(out.discnumber, Some(1));
+		assert_eq!(out.barcode.as_deref(), Some("018111414920"));
+	}
+
+	#[tokio::test]
+	async fn lookup_live_multi_release_fixture_release_index_2_maps_expected_release() {
+		let server = MockServer::start().await;
+		Mock::given(method("GET"))
+			.and(path("/ws/2/discid/BKkzOxbdODYWFIOEEZ3b.b_nm64-"))
+			.and(query_param("inc", MB_INC))
+			.and(query_param("fmt", "json"))
+			.respond_with(
+				ResponseTemplate::new(200)
+					.set_body_string(fixture("discid_bkkz_multi_release_live.json")),
+			)
+			.mount(&server)
+			.await;
+
+		let http = ReqwestMusicBrainzHttpClient::default();
+		let svc = MusicBrainzService::new(http, server.uri(), "cyanrip-rs-test/0.1");
+
+		let out = svc
+			.lookup_release(
+				"BKkzOxbdODYWFIOEEZ3b.b_nm64-",
+				Some(&ReleaseSelection::Index(2)),
+				0,
+				10,
+			)
+			.await
+			.expect("lookup should succeed");
+
+		assert_eq!(out.musicbrainz_albumid, "1f504c20-5423-47fb-8d25-243ce749b92c");
+		assert_eq!(
+			out.album,
+			"Power Classics! Classical Music for your Active Lifestyle"
+		);
+		assert_eq!(out.totaldiscs, 10);
+		assert_eq!(out.discnumber, Some(3));
+		assert_eq!(out.barcode.as_deref(), Some("018111584821"));
 	}
 
 	#[tokio::test]
@@ -522,5 +663,44 @@ mod tests {
 			.await
 			.expect_err("empty releases should map to not found");
 		assert_eq!(err, MusicBrainzError::NotFound);
+	}
+
+	#[test]
+	fn retry_delay_sequence_doubles_from_ten_seconds() {
+		assert_eq!(mb_503_retry_delay_secs(0), 10);
+		assert_eq!(mb_503_retry_delay_secs(1), 20);
+		assert_eq!(mb_503_retry_delay_secs(2), 40);
+		assert_eq!(mb_503_retry_delay_secs(3), 80);
+	}
+
+	#[tokio::test]
+	async fn lookup_retries_http_503_up_to_four_times_then_fails() {
+		let server = MockServer::start().await;
+		Mock::given(method("GET"))
+			.and(path("/ws/2/discid/RETRY503"))
+			.and(query_param("inc", MB_INC))
+			.and(query_param("fmt", "json"))
+			.respond_with(ResponseTemplate::new(503))
+			.expect(5)
+			.mount(&server)
+			.await;
+
+		let http = ReqwestMusicBrainzHttpClient::default();
+		let svc = MusicBrainzService::new(http, server.uri(), "cyanrip-rs-test/0.1");
+
+		let err = svc
+			.lookup_release("RETRY503", Some(&ReleaseSelection::Index(1)), 0, 99)
+			.await
+			.expect_err("503 should fail after retries are exhausted");
+
+		match err {
+			MusicBrainzError::Http(msg) => {
+				assert!(
+					msg.contains("503 Service Unavailable"),
+					"unexpected http message: {msg}"
+				);
+			}
+			other => panic!("unexpected error: {other:?}"),
+		}
 	}
 }

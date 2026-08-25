@@ -12,4 +12,5 @@ pub struct PcmTrackData {
 }
 
 pub mod flac;
+pub mod process;
 pub mod wav;

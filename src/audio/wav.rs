@@ -97,6 +97,9 @@ where
 }
 
 pub fn write_wav_file(path: &Path, input: &PcmTrackData) -> Result<(), WavWriteError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let file = File::create(path)?;
     write_to_writer(file, input)
 }

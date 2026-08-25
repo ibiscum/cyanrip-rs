@@ -50,13 +50,12 @@ pub fn compute_discid(tracks: &[DiscTrack]) -> Result<DiscidInfo, DiscidError> {
     sha_input.push_str(&format!("{last_audio_track_number:02X}"));
     sha_input.push_str(&format!("{last:08X}"));
 
-    for i in 0..TOC_TRACK_LIMIT {
-        let offset = if i <= last_audio_track_index {
-            tracks[i].start_lsn as u32 + 150
-        } else {
-            0
-        };
+    for track in tracks.iter().take(last_audio_track_index + 1).take(TOC_TRACK_LIMIT) {
+        let offset = track.start_lsn as u32 + 150;
         sha_input.push_str(&format!("{offset:08X}"));
+    }
+    for _ in tracks.iter().take(last_audio_track_index + 1).take(TOC_TRACK_LIMIT).count()..TOC_TRACK_LIMIT {
+        sha_input.push_str("00000000");
     }
 
     let digest = Sha1::digest(sha_input.as_bytes());

@@ -147,19 +147,10 @@ impl ParanoiaCallbackCounters {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ParanoiaHeuristicConfig {
     pub overlap_frames: usize,
     pub verify_overlap: bool,
-}
-
-impl Default for ParanoiaHeuristicConfig {
-    fn default() -> Self {
-        Self {
-            overlap_frames: 0,
-            verify_overlap: false,
-        }
-    }
 }
 
 fn overlap_signature(frames: &[Vec<u8>], overlap_frames: usize) -> Option<(u32, u32)> {
@@ -213,6 +204,7 @@ where
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_track_with_paranoia_heuristics_interruptible<R, F, I>(
     reader: &mut R,
     start_lsn: i32,
