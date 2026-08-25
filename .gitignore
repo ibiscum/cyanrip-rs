@@ -27,3 +27,7 @@ target
 
 # Audio files
 tests/fixtures/samples/
+
+*.flac
+*.mp3
+*.wav
