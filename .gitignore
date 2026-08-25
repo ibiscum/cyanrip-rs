@@ -23,7 +23,8 @@ target
 
 # Added by cargo
 
-/target
+target/
+tmp/
 
 # Audio files
 tests/fixtures/samples/
