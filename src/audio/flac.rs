@@ -107,6 +107,9 @@ pub fn render_flac_bytes(input: &PcmTrackData) -> Result<Vec<u8>, FlacWriteError
 }
 
 pub fn write_flac_file(path: &Path, input: &PcmTrackData) -> Result<(), FlacWriteError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let bytes = render_flac_bytes(input)?;
     fs::write(path, bytes)?;
     Ok(())

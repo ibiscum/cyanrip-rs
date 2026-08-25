@@ -2,7 +2,10 @@
   "id": "TESTDISC",
   "offset-count": 2,
   "sectors": 30000,
-  "offsets": [150, 15150],
+  "offsets": [
+    150,
+    15150
+  ],
   "releases": [
     {
       "id": "rel-1",
@@ -22,7 +25,10 @@
               "id": "TESTDISC",
               "offset-count": 2,
               "sectors": 30000,
-              "offsets": [150, 15150]
+              "offsets": [
+                150,
+                15150
+              ]
             }
           ],
           "tracks": [
@@ -91,7 +97,10 @@
               "id": "OTHERDISC",
               "offset-count": 2,
               "sectors": 28000,
-              "offsets": [150, 14000]
+              "offsets": [
+                150,
+                14000
+              ]
             }
           ],
           "tracks": [
@@ -118,7 +127,10 @@
               "id": "TESTDISC",
               "offset-count": 2,
               "sectors": 30000,
-              "offsets": [150, 15150]
+              "offsets": [
+                150,
+                15150
+              ]
             }
           ],
           "tracks": [

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::SanitizeMethod;
 
@@ -391,10 +392,82 @@ pub fn build_track_relative_path(
     Ok(trim_path_components(&path, '/'))
 }
 
+pub fn build_log_relative_path(
+    ctx: &NamingContext,
+    album_meta: &HashMap<String, String>,
+    folder_scheme: &str,
+    log_scheme: &str,
+    format_suffix: &str,
+) -> Result<String, String> {
+    let folder = render_scheme(ctx, album_meta, format_suffix, folder_scheme)?;
+    let file = render_scheme(ctx, album_meta, format_suffix, log_scheme)?;
+    let path = format!("{folder}/{file}.log");
+    Ok(trim_path_components(&path, '/'))
+}
+
+pub fn build_cue_relative_path(
+    ctx: &NamingContext,
+    album_meta: &HashMap<String, String>,
+    folder_scheme: &str,
+    cue_scheme: &str,
+    format_suffix: &str,
+) -> Result<String, String> {
+    let folder = render_scheme(ctx, album_meta, format_suffix, folder_scheme)?;
+    let file = render_scheme(ctx, album_meta, format_suffix, cue_scheme)?;
+    let path = format!("{folder}/{file}.cue");
+    Ok(trim_path_components(&path, '/'))
+}
+
+pub fn build_cover_relative_path(
+    ctx: &NamingContext,
+    album_meta: &HashMap<String, String>,
+    folder_scheme: &str,
+    format_suffix: &str,
+    title: &str,
+    extension: Option<&str>,
+) -> Result<String, String> {
+    let folder = render_scheme(ctx, album_meta, format_suffix, folder_scheme)?;
+    let sanitized_title = sanitize_text(ctx, title, true);
+    let ext = extension
+        .map(|e| e.trim_start_matches('.'))
+        .filter(|e| !e.trim().is_empty())
+        .unwrap_or("bin");
+    let path = format!("{folder}/{sanitized_title}.{ext}");
+    Ok(trim_path_components(&path, '/'))
+}
+
+pub fn resolve_output_path(
+    output_root: &Path,
+    relative_path: &str,
+    create_dirs: bool,
+) -> Result<PathBuf, std::io::Error> {
+    let absolute = output_root.join(relative_path);
+    if create_dirs && let Some(parent) = absolute.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(absolute)
+}
+
+pub fn detect_track_path_collisions(entries: &[(u32, String)]) -> Vec<(u32, u32, String)> {
+    let mut seen: HashMap<&str, u32> = HashMap::new();
+    let mut out = Vec::new();
+
+    for (track, path) in entries {
+        if let Some(first_track) = seen.get(path.as_str()) {
+            out.push((*first_track, *track, path.clone()));
+        } else {
+            seen.insert(path.as_str(), *track);
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::SanitizeMethod;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn mkctx(method: SanitizeMethod, tracks: usize) -> NamingContext {
         NamingContext {
@@ -506,5 +579,80 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out, "Example Album [FLAC]/01 - Intro.flac");
+    }
+
+    #[test]
+    fn builds_log_and_cue_paths_from_schemes() {
+        let ctx = mkctx(SanitizeMethod::Unicode, 12);
+        let album = map(&[("album", "Example Album"), ("disc", "1"), ("totaldiscs", "2")]);
+
+        let log_path = build_log_relative_path(
+            &ctx,
+            &album,
+            "{album} [{format}]",
+            "{album}{if #totaldiscs# > #1# CD|disc|}",
+            "FLAC",
+        )
+        .unwrap();
+        assert_eq!(log_path, "Example Album [FLAC]/Example Album CD1.log");
+
+        let cue_path = build_cue_relative_path(
+            &ctx,
+            &album,
+            "{album} [{format}]",
+            "{album}{if #totaldiscs# > #1# CD|disc|}",
+            "FLAC",
+        )
+        .unwrap();
+        assert_eq!(cue_path, "Example Album [FLAC]/Example Album CD1.cue");
+    }
+
+    #[test]
+    fn builds_cover_path_with_sanitized_title_and_extension() {
+        let ctx = mkctx(SanitizeMethod::Simple, 12);
+        let album = map(&[("album", "Example Album")]);
+        let out = build_cover_relative_path(
+            &ctx,
+            &album,
+            "{album} [{format}]",
+            "FLAC",
+            "Front:Cover",
+            Some("jpg"),
+        )
+        .unwrap();
+
+        assert_eq!(out, "Example Album [FLAC]/Front_Cover.jpg");
+    }
+
+    #[test]
+    fn resolve_output_path_creates_parent_directories_when_requested() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("cyanrip-rs-naming-path-{now}"));
+        let rel = "Album [FLAC]/01 - Intro.flac";
+
+        let abs = resolve_output_path(&root, rel, true).expect("path resolution should succeed");
+        assert_eq!(abs, root.join(rel));
+        assert!(
+            abs.parent().is_some_and(|p| p.exists()),
+            "parent directories should exist"
+        );
+
+        let cleanup = std::fs::remove_dir_all(&root);
+        assert!(cleanup.is_ok(), "temporary output root should be removable");
+    }
+
+    #[test]
+    fn detects_track_path_collisions() {
+        let collisions = detect_track_path_collisions(&[
+            (1, "same/file.flac".to_string()),
+            (2, "other/file.flac".to_string()),
+            (3, "same/file.flac".to_string()),
+        ]);
+
+        assert_eq!(collisions.len(), 1);
+        assert_eq!(collisions[0], (1, 3, "same/file.flac".to_string()));
     }
 }

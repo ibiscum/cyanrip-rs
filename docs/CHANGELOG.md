@@ -1,5 +1,35 @@
 # Migration Changelog
 
+## 2026-08-24
+
+### M7 Paranoia Main-Flow Wiring and `--no-accurip` Option Flow
+- Cross-checked upstream docs and source (`main-flow.md`, `no-accurip-option-flow.md`, and `src/cyanrip_main.c`) and aligned info/no-accurip interactions in [../src/cli.rs](../src/cli.rs): `-I` keeps AccurateRip behavior user-controlled (via `-A`) while still disabling eject side effects.
+- Kept find-offset override semantics intact in [../src/cli.rs](../src/cli.rs): `-f/--find-offset` re-enables AccurateRip while disabling MusicBrainz/Cover Art DB and resetting offset/eject side effects.
+- Hardened physical-drive paranoia integration in [../src/app.rs](../src/app.rs) so the preflight paranoia run is now state-machine validated and must end in `TrackComplete`; non-complete end states are surfaced as runtime errors.
+- Added integration coverage in [../tests/run_workflow_cli.rs](../tests/run_workflow_cli.rs) for info-mode AccurateRip default-vs-`-A` behavior and explicit paranoia/retry full-rip bridge execution.
+
+## 2026-08-22
+
+### M7 Info-Only MusicBrainz Release Selection Parity
+- Updated `-I` info-only workflow in [../src/app.rs](../src/app.rs) to perform MusicBrainz release resolution when DiscID is available and MusicBrainz is enabled.
+- Implemented upstream-compatible multi-release behavior for info-only mode: if multiple releases are returned and no `-R` selection is provided, the run now exits non-zero with a candidate list and explicit `-R` guidance.
+- Extended `-I` reporting in [../src/app.rs](../src/app.rs) to include selected MusicBrainz release-level fields (`Release ID`, `Album`, `Album artist`, `Disc number`, `Total discs`) and per-track metadata blocks when a release is selected via `-R`.
+- Added captured live DiscID request/response fixtures in [../tests/fixtures/musicbrainz/discid_bkkz_multi_release_live.request.txt](../tests/fixtures/musicbrainz/discid_bkkz_multi_release_live.request.txt), [../tests/fixtures/musicbrainz/discid_bkkz_multi_release_live.json](../tests/fixtures/musicbrainz/discid_bkkz_multi_release_live.json), and [../tests/fixtures/musicbrainz/discid_bkkz_multi_release_live.upstream_output.txt](../tests/fixtures/musicbrainz/discid_bkkz_multi_release_live.upstream_output.txt).
+- Added regression coverage for the captured live fixture in [../src/metadata/musicbrainz.rs](../src/metadata/musicbrainz.rs), including release-index 1 and release-index 2 mapping assertions.
+- Added ignored hardware/network integration coverage in [../tests/run_workflow_cli.rs](../tests/run_workflow_cli.rs) for `-I -R 1` and `-I -R 2`, asserting release-specific metadata differences in output.
+- Added ignored hardware integration coverage for `-I` multi-release selection error-path behavior in [../tests/linux_physical_drive_validation.rs](../tests/linux_physical_drive_validation.rs).
+- Added helper runner script [../scripts/run_m7_info_release_disambiguation.sh](../scripts/run_m7_info_release_disambiguation.sh) to execute the two ignored `run_workflow_cli` disambiguation tests (`-R 1` and `-R 2`) with required features and environment defaults.
+
+### M7 Cue-Only Offset-Unset Parity
+- Matched upstream `-J` behavior for unset offset: runtime returns the message `Offset is unset! To continue with an offset of 0, run with -s 0!` and exits successfully.
+- Added `Settings.offset_is_set` tracking in [../src/lib.rs](../src/lib.rs) and CLI mapping in [../src/cli.rs](../src/cli.rs) to preserve explicit-vs-default offset intent.
+- Added cue-only runtime parity handling in [../src/app.rs](../src/app.rs).
+- Added recorded upstream observation fixture [../tests/fixtures/cli/cue_only_offset_unset_upstream.txt](../tests/fixtures/cli/cue_only_offset_unset_upstream.txt) and integration regression assertion in [../tests/run_workflow_cli.rs](../tests/run_workflow_cli.rs).
+
+### Architecture Documentation: `cyanrip_ctx` Replacement
+- Added [ARCHITECTURE_CONTEXT_MAPPING.md](ARCHITECTURE_CONTEXT_MAPPING.md) documenting how upstream monolithic context responsibilities are represented in Rust through `Settings`, workflow-level typed inputs/outputs, metadata orchestration structs, TOC/drive structs, and output flow structs.
+- Documented rationale for avoiding a new monolithic mutable context in favor of explicit ownership boundaries and feature-localized state.
+
 ## 2026-08-20
 
 ### M7 CLI Info-Only Parity Tightening

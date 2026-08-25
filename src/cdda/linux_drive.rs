@@ -50,6 +50,9 @@ pub struct LinuxPhysicalDriveReader<B: LinuxDriveBackend> {
 impl<B: LinuxDriveBackend> LinuxPhysicalDriveReader<B> {
     pub fn new(mut backend: B, device_path: Option<&str>) -> Result<Self, CddaReadError> {
         let handle = backend.open(device_path)?;
+        // Upstream primes media-change tracking once after opening the drive
+        // so stale "changed" state does not spuriously abort the first read loop.
+        let _ = backend.get_media_changed_code(handle);
         Ok(Self {
             backend,
             handle,
@@ -127,6 +130,7 @@ impl LinuxDriveBackend for UnsupportedLinuxDriveBackend {
 pub struct LibcdioSysBackend;
 
 #[cfg(feature = "backend-libcdio-sys")]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 impl LinuxDriveBackend for LibcdioSysBackend {
     type Handle = *mut libcdio_sys::CdIo_t;
 
@@ -184,7 +188,7 @@ impl LinuxDriveBackend for LibcdioSysBackend {
     }
 
     fn media_changed_unsupported_code(&self) -> i32 {
-        libcdio_sys::driver_return_code_t_DRIVER_OP_UNSUPPORTED as i32
+        libcdio_sys::driver_return_code_t_DRIVER_OP_UNSUPPORTED
     }
 }
 
@@ -227,7 +231,7 @@ pub fn read_drive_toc_tracks(device_path: Option<&str>) -> Result<Vec<DriveTrack
                 libcdio_sys::cdio_track_enums_CDIO_CDROM_LEADOUT_TRACK as u8,
             )
         } as i32;
-        if first <= 0 || count <= 0 || leadout <= 0 || leadout == libcdio_sys::CDIO_INVALID_LSN as i32 {
+        if first <= 0 || count <= 0 || leadout <= 0 || leadout == libcdio_sys::CDIO_INVALID_LSN {
             return Err(CddaReadError::ReadFailed(
                 "invalid TOC values returned by drive".to_string(),
             ));
@@ -236,7 +240,7 @@ pub fn read_drive_toc_tracks(device_path: Option<&str>) -> Result<Vec<DriveTrack
         for i in 0..count {
             let track_number = (first + i) as u8;
             let start = unsafe { libcdio_sys::cdio_get_track_lsn(ptr, track_number) } as i32;
-            if start == libcdio_sys::CDIO_INVALID_LSN as i32 || start < 0 {
+            if start == libcdio_sys::CDIO_INVALID_LSN || start < 0 {
                 return Err(CddaReadError::ReadFailed(format!(
                     "invalid start LSN for track {track_number}"
                 )));
@@ -244,7 +248,7 @@ pub fn read_drive_toc_tracks(device_path: Option<&str>) -> Result<Vec<DriveTrack
 
             let next_start = if i + 1 < count {
                 let next = unsafe { libcdio_sys::cdio_get_track_lsn(ptr, (track_number + 1) as u8) } as i32;
-                if next == libcdio_sys::CDIO_INVALID_LSN as i32 || next <= start {
+                if next == libcdio_sys::CDIO_INVALID_LSN || next <= start {
                     return Err(CddaReadError::ReadFailed(format!(
                         "invalid next-track LSN for track {track_number}"
                     )));
@@ -273,7 +277,7 @@ pub fn read_drive_toc_tracks(device_path: Option<&str>) -> Result<Vec<DriveTrack
             };
 
             let raw_pregap = unsafe { libcdio_sys::cdio_get_track_pregap_lsn(ptr, track_number) } as i32;
-            let pregap_lsn = if raw_pregap == libcdio_sys::CDIO_INVALID_LSN as i32 || raw_pregap == start {
+            let pregap_lsn = if raw_pregap == libcdio_sys::CDIO_INVALID_LSN || raw_pregap == start {
                 None
             } else {
                 Some(raw_pregap)
@@ -365,6 +369,7 @@ where
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_paranoia_on_linux_drive_with_backend_heuristics<B, F>(
     backend: B,
     device_path: Option<&str>,
@@ -392,6 +397,7 @@ where
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_paranoia_on_linux_drive_with_backend_heuristics_interruptible<B, F, I>(
     backend: B,
     device_path: Option<&str>,

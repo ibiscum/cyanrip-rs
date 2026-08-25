@@ -1,0 +1,6 @@
+DiscID: BKkzOxbdODYWFIOEEZ3b.b_nm64-
+Source command: ~/data/cyanrip/build/src/cyanrip -I
+Expected upstream behavior: multiple release candidates are listed and the command exits non-zero unless -R is provided.
+
+MusicBrainz request URL:
+https://musicbrainz.org/ws/2/discid/BKkzOxbdODYWFIOEEZ3b.b_nm64-?inc=recordings%20artist-credits%20labels&fmt=json

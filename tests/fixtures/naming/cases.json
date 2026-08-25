@@ -26,11 +26,26 @@
     }
   ],
   "is_integer": [
-    { "input": "0", "expected": true },
-    { "input": "123456", "expected": true },
-    { "input": "", "expected": false },
-    { "input": "12a", "expected": false },
-    { "input": "-1", "expected": false }
+    {
+      "input": "0",
+      "expected": true
+    },
+    {
+      "input": "123456",
+      "expected": true
+    },
+    {
+      "input": "",
+      "expected": false
+    },
+    {
+      "input": "12a",
+      "expected": false
+    },
+    {
+      "input": "-1",
+      "expected": false
+    }
   ],
   "path_examples": [
     {

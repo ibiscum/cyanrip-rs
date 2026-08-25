@@ -111,28 +111,27 @@ impl<H: CoverArtHttpClient> CoverArtService<H> {
 		let have_front = cover_arts.iter().any(|c| c.title == "Front");
 		let have_back = cover_arts.iter().any(|c| c.title == "Back");
 
-		if !have_front || !have_back {
-			if !disable_coverart_db {
-				if let Some(release_id) = release_id {
-					let mut has_err = 0i32;
+		if (!have_front || !have_back)
+			&& !disable_coverart_db
+			&& let Some(release_id) = release_id
+		{
+			let mut has_err = 0i32;
 
-					if !have_front {
-						let front_id = cover_id("front", lookup_size);
-						if self
-							.fetch_coverart_db_art(cover_arts, release_id, "Front", &front_id, info_only)
-							.await?
-						{
-							has_err = 1;
-						}
-					}
-
-					// Preserve C behavior: back lookup only runs if front lookup was attempted and succeeded.
-					if !have_back && has_err > 0 {
-						let back_id = cover_id("back", lookup_size);
-						self.fetch_coverart_db_art(cover_arts, release_id, "Back", &back_id, info_only)
-							.await?;
-					}
+			if !have_front {
+				let front_id = cover_id("front", lookup_size);
+				if self
+					.fetch_coverart_db_art(cover_arts, release_id, "Front", &front_id, info_only)
+					.await?
+				{
+					has_err = 1;
 				}
+			}
+
+			// Preserve C behavior: back lookup only runs if front lookup was attempted and succeeded.
+			if !have_back && has_err > 0 {
+				let back_id = cover_id("back", lookup_size);
+				self.fetch_coverart_db_art(cover_arts, release_id, "Back", &back_id, info_only)
+					.await?;
 			}
 		}
 

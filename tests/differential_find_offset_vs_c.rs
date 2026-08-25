@@ -26,18 +26,23 @@ enum OffsetOutcome {
 }
 
 fn classify_rust(out: &str) -> OffsetOutcome {
-    if out.contains("Status: drive offset found:") {
+    if out.contains("Status: drive offset found:")
+        || (out.contains("Drive offset of ") && out.contains(" found (confidence:"))
+    {
         return OffsetOutcome::Found;
     }
     if out.contains("Status: no matching AccurateRip entry;")
         || out.contains("Status: no track had AccurateRip entry;")
+        || out.contains("No track had AccuRip entry")
     {
         return OffsetOutcome::NoAr;
     }
-    if out.contains("Status: no track was long enough") {
+    if out.contains("Status: no track was long enough") || out.contains("No track was long enough") {
         return OffsetOutcome::TooShort;
     }
-    if out.contains("Status: unable to find drive offset") {
+    if out.contains("Status: unable to find drive offset")
+        || out.contains("Was not able to find drive offset")
+    {
         return OffsetOutcome::NotFound;
     }
     OffsetOutcome::Unknown

@@ -283,3 +283,42 @@ fn info_mode_report_contains_toc_section_with_track_details() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires a real optical drive, network, and the multi-release fixture disc inserted beforehand"]
+fn info_mode_requires_release_selection_when_musicbrainz_returns_multiple_releases() {
+    use cyanrip_rs::app::run_workflow;
+    use cyanrip_rs::{OutputFormat, Settings};
+
+    let device = std::env::var("CYANRIP_CDROM_DEVICE").unwrap_or_else(|_| "/dev/cdrom".to_string());
+    let expected_discid = std::env::var("CYANRIP_EXPECT_MULTI_RELEASE_DISCID")
+        .unwrap_or_else(|_| "BKkzOxbdODYWFIOEEZ3b.b_nm64-".to_string());
+
+    let settings = Settings {
+        dev_path: Some(device.clone()),
+        print_info_only: true,
+        disable_mb: false,
+        disable_accurip: true,
+        disable_coverart_db: true,
+        outputs: vec![OutputFormat::Flac],
+        ..Settings::default()
+    };
+
+    let err = run_workflow(&settings).expect_err(
+        "-I without -R should fail when MusicBrainz returns multiple releases for this disc",
+    );
+    let msg = err.to_string();
+
+    assert!(
+        msg.contains("Multiple releases found in database for DiscID"),
+        "expected multi-release prompt; output:\n{msg}"
+    );
+    assert!(
+        msg.contains(&expected_discid),
+        "expected DiscID {expected_discid} in prompt; output:\n{msg}"
+    );
+    assert!(
+        msg.contains("Please specify which release to use by adding the -R argument"),
+        "expected release-selection guidance; output:\n{msg}"
+    );
+}

@@ -2,7 +2,9 @@
   "id": "TESTDISC",
   "offset-count": 1,
   "sectors": 20000,
-  "offsets": [150],
+  "offsets": [
+    150
+  ],
   "releases": [
     {
       "id": "rel-single",
@@ -19,7 +21,9 @@
               "id": "TESTDISC",
               "offset-count": 1,
               "sectors": 20000,
-              "offsets": [150]
+              "offsets": [
+                150
+              ]
             }
           ],
           "tracks": [

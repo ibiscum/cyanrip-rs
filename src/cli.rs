@@ -44,11 +44,10 @@ pub struct CliArgs {
     #[arg(
         short = 's',
         long = "offset",
-        default_value_t = 0,
         help_heading = "Ripping options",
         help = "CD drive offset in samples"
     )]
-    pub offset: i32,
+    pub offset: Option<i32>,
 
     #[arg(
         short = 'r',
@@ -367,8 +366,10 @@ impl CliArgs {
             return Ok(CliConfig { settings, action });
         }
 
-        settings.offset = self.offset;
-        settings.over_under_read_frames = calc_over_under_read_frames(self.offset);
+        let offset = self.offset.unwrap_or(0);
+        settings.offset = offset;
+        settings.offset_is_set = self.offset.is_some();
+        settings.over_under_read_frames = calc_over_under_read_frames(offset);
         settings.max_retries = self.retries;
         settings.ripping_retries = self.repeat_rips;
         settings.speed = self.speed;
@@ -440,7 +441,11 @@ impl CliArgs {
         }
 
         validate_folder_scheme(settings.outputs.len(), &settings.folder_name_scheme)?;
-        validate_mode_combo(settings.print_info_only, self.cue_only)?;
+        validate_mode_combo(
+            settings.print_info_only,
+            self.cue_only,
+            settings.find_drive_offset,
+        )?;
 
         if settings.generate_cue_only {
             settings.disable_accurip = true;
@@ -457,6 +462,7 @@ impl CliArgs {
             settings.disable_mb = true;
             settings.disable_coverart_db = true;
             settings.offset = 0;
+            settings.offset_is_set = false;
             settings.over_under_read_frames = 0;
             settings.eject_on_success_rip = false;
         }
@@ -624,6 +630,24 @@ mod tests {
     }
 
     #[test]
+    fn rejects_find_offset_with_info_mode() {
+        let err = parse_from_iter(["cyanrip-rs", "-f", "-I"]).unwrap_err();
+        assert_eq!(
+            err,
+            "-f (find drive offset) cannot be used with -I (only print info)!"
+        );
+    }
+
+    #[test]
+    fn rejects_find_offset_with_cue_only_mode() {
+        let err = parse_from_iter(["cyanrip-rs", "-f", "-J"]).unwrap_err();
+        assert_eq!(
+            err,
+            "-f (find drive offset) cannot be used with -J (only generate a CUE sheet)!"
+        );
+    }
+
+    #[test]
     fn parses_outputs_help_mode() {
         let cfg = parse_from_iter(["cyanrip-rs", "-o", "help"]).unwrap();
         assert_eq!(cfg.action, CliAction::ShowOutputsHelp);
@@ -719,10 +743,17 @@ mod tests {
 
     #[test]
     fn cue_only_applies_c_side_effects() {
-        let cfg = parse_from_iter(["cyanrip-rs", "-J"]).unwrap();
+        let cfg = parse_from_iter(["cyanrip-rs", "-J", "-s", "0"]).unwrap();
         assert!(cfg.settings.generate_cue_only);
         assert!(cfg.settings.disable_accurip);
         assert!(cfg.settings.disable_coverart_db);
+    }
+
+    #[test]
+    fn cue_only_without_offset_keeps_offset_unset_marker() {
+        let cfg = parse_from_iter(["cyanrip-rs", "-J"]).unwrap();
+        assert!(cfg.settings.generate_cue_only);
+        assert!(!cfg.settings.offset_is_set);
     }
 
     #[test]
@@ -740,6 +771,7 @@ mod tests {
         assert!(cfg.settings.disable_mb);
         assert!(cfg.settings.disable_coverart_db);
         assert_eq!(cfg.settings.offset, 0);
+        assert!(!cfg.settings.offset_is_set);
         assert_eq!(cfg.settings.over_under_read_frames, 0);
         assert!(!cfg.settings.eject_on_success_rip);
     }

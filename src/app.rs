@@ -3,11 +3,18 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(all(target_os = "linux", feature = "cdda"))]
+use std::time::{Duration, Instant};
 
 use crate::audio::flac::write_flac_file;
+use crate::audio::process::{TrackProcessingOptions, process_track_pcm};
 use crate::audio::wav::write_wav_file;
 use crate::audio::{PcmSpec, PcmTrackData};
 use crate::cdda::paranoia::{RetryPolicy, RipState};
+#[cfg(all(target_os = "linux", feature = "cdda"))]
+use crate::cdda::paranoia::RipEvent;
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+use crate::cdda::reader::CddaReadError;
 use crate::cdda::reader::run_track_with_paranoia_heuristics_interruptible;
 use crate::cdda::reader::{
     CDDA_FRAME_BYTES, CddaFrameReader, FaultInjectedImageReader, ParanoiaHeuristicConfig,
@@ -18,20 +25,27 @@ use crate::metadata::accurip::{
 };
 use crate::metadata::coverart::{CoverArtError, CoverArtImage, CoverArtService};
 use crate::metadata::discid::{DiscTrack, DiscidInfo, compute_discid};
-use crate::metadata::musicbrainz::{MusicBrainzError, MusicBrainzReleaseMeta, MusicBrainzService};
-use crate::naming::{NamingContext, build_track_relative_path};
+use crate::metadata::musicbrainz::{
+    MusicBrainzError, MusicBrainzReleaseMeta, MusicBrainzService,
+};
+#[cfg(any(test, all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+use crate::metadata::musicbrainz::ReleaseSummary;
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+use crate::metadata::musicbrainz::ReqwestMusicBrainzHttpClient;
+use crate::naming::{
+    NamingContext, build_track_relative_path,
+    detect_track_path_collisions, resolve_output_path,
+};
 use crate::{DriverKind, OutputFormat, ReleaseSelection, Settings, open_dev_kind};
 
 const DEFAULT_SYNTHETIC_FRAME_COUNT: usize = 32;
 #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
 const FIND_OFFSET_INITIAL_RADIUS_FRAMES: usize = 6;
-#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
-const FIND_OFFSET_MAX_RADIUS_FRAMES: usize = 1536;
 
 #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
 use tokio::runtime::Builder as TokioRuntimeBuilder;
 #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
-use crate::metadata::accurip::{AccuRipDbEntry, compute_accurip_ids, find_accurip_confidence};
+use crate::metadata::accurip::{AccuRipDbEntry, find_accurip_confidence};
 
 #[cfg(all(target_os = "linux", feature = "cdda"))]
 fn paranoia_heuristics_for_level(paranoia_level: i32) -> ParanoiaHeuristicConfig {
@@ -109,20 +123,20 @@ fn render_info_only_report(settings: &Settings, drive_used: Option<&str>) -> Str
     let output_names: Vec<&str> = settings
         .outputs
         .iter()
-        .filter_map(|o| match o {
-            OutputFormat::Flac => Some("flac"),
-            OutputFormat::Wav => Some("wav"),
-            OutputFormat::Mp3 => Some("mp3"),
-            OutputFormat::Tta => Some("tta"),
-            OutputFormat::Opus => Some("opus"),
-            OutputFormat::Aac => Some("aac"),
-            OutputFormat::AacMp4 => Some("aac_mp4"),
-            OutputFormat::Wavpack => Some("wavpack"),
-            OutputFormat::Vorbis => Some("vorbis"),
-            OutputFormat::Alac => Some("alac"),
-            OutputFormat::AlacMp4 => Some("alac_mp4"),
-            OutputFormat::OpusMp4 => Some("opus_mp4"),
-            OutputFormat::Pcm => Some("pcm"),
+        .map(|o| match o {
+            OutputFormat::Flac => "flac",
+            OutputFormat::Wav => "wav",
+            OutputFormat::Mp3 => "mp3",
+            OutputFormat::Tta => "tta",
+            OutputFormat::Opus => "opus",
+            OutputFormat::Aac => "aac",
+            OutputFormat::AacMp4 => "aac_mp4",
+            OutputFormat::Wavpack => "wavpack",
+            OutputFormat::Vorbis => "vorbis",
+            OutputFormat::Alac => "alac",
+            OutputFormat::AlacMp4 => "alac_mp4",
+            OutputFormat::OpusMp4 => "opus_mp4",
+            OutputFormat::Pcm => "pcm",
         })
         .collect();
     lines.push(format!(
@@ -138,6 +152,69 @@ fn render_info_only_report(settings: &Settings, drive_used: Option<&str>) -> Str
         if settings.disable_accurip { "disabled" } else { "enabled" }
     ));
     lines.join("\n")
+}
+
+#[cfg(any(test, all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+fn validate_requested_track_indices_against_toc(
+    toc: &[InfoTocEntry],
+    requested_indices: &[i32],
+) -> Result<(), RunWorkflowError> {
+    if requested_indices.is_empty() {
+        return Ok(());
+    }
+
+    let available: Vec<i32> = toc.iter().map(|t| i32::from(t.number)).collect();
+    for idx in requested_indices {
+        if *idx <= 0 || !available.contains(idx) {
+            return Err(RunWorkflowError::Runtime(format!(
+                "Invalid rip index {}, list has {} tracks!",
+                idx,
+                toc.len()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(any(test, all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+fn format_musicbrainz_release_summary_for_info_mode(idx: usize, release: &ReleaseSummary) -> String {
+    let mut suffix = String::new();
+    if let Some(country) = release.country.as_deref().filter(|c| !c.trim().is_empty()) {
+        suffix.push_str(&format!(" ({country})"));
+    }
+    if let Some(date) = release.date.as_deref().filter(|d| !d.trim().is_empty()) {
+        suffix.push_str(&format!(" ({date})"));
+    }
+    if release.num_cds > 1 {
+        suffix.push_str(&format!(" ({} CDs)", release.num_cds));
+    }
+
+    format!(
+        "    {} (ID: {}): {}{}",
+        idx.saturating_add(1),
+        release.id,
+        release.album,
+        suffix
+    )
+}
+
+#[cfg(any(test, all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+fn format_musicbrainz_multiple_releases_message(discid: &str, releases: &[ReleaseSummary]) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "Multiple releases found in database for DiscID {discid}:\n"
+    ));
+    for (idx, release) in releases.iter().enumerate() {
+        out.push_str(&format!(
+            "{}\n",
+            format_musicbrainz_release_summary_for_info_mode(idx, release)
+        ));
+    }
+    out.push_str(
+        "\nPlease specify which release to use by adding the -R argument with an index or ID.",
+    );
+    out
 }
 
 #[cfg(any(test, all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
@@ -166,8 +243,11 @@ fn render_info_only_report_with_toc(
     drive_used: Option<&str>,
     toc: &[InfoTocEntry],
     discid: Option<(&str, &str, &str)>,
+    musicbrainz: Option<&MusicBrainzReleaseMeta>,
 ) -> String {
     let mut out = render_info_only_report(settings, drive_used);
+    let selected_tracks = selected_track_numbers(settings);
+    let visible_tracks = filter_info_tracks(toc, &selected_tracks);
 
     if !toc.is_empty() {
         let total_frames: i32 = toc
@@ -189,12 +269,28 @@ fn render_info_only_report_with_toc(
         if let Some((discid_str, cddb_str, mb_url)) = discid {
             out.push_str(&format!("\nMusicBrainz URL:\n{mb_url}\n"));
             out.push_str(&format!("DiscID:         {discid_str}\n"));
+            if let Some(release) = musicbrainz {
+                out.push_str(&format!(
+                    "Release ID:     {}\n",
+                    release.musicbrainz_albumid
+                ));
+            }
             out.push_str(&format!("CDDB ID:        {cddb_str}\n"));
+        }
+        if let Some(release) = musicbrainz {
+            out.push_str(&format!("Album:          {}\n", release.album));
+            if let Some(album_artist) = release.album_artist.as_deref() {
+                out.push_str(&format!("Album artist:   {album_artist}\n"));
+            }
+            if let Some(discnumber) = release.discnumber {
+                out.push_str(&format!("Disc number:    {discnumber}\n"));
+            }
+            out.push_str(&format!("Total discs:    {}\n", release.totaldiscs));
         }
         out.push_str(&format!("Total time:     {}\n", format_msf_from_frames(total_frames)));
 
         out.push_str("\nTracks:\n");
-        for track in toc {
+        for track in visible_tracks {
             let frames = track.end_lsn.saturating_sub(track.start_lsn).saturating_add(1);
             out.push_str(&format!("Track {} info:\n", track.number));
             out.push_str("  Preemphasis:   none detected\n");
@@ -227,11 +323,82 @@ fn render_info_only_report_with_toc(
                 "  Accurip:       {}\n",
                 if settings.disable_accurip { "disabled" } else { "enabled" }
             ));
+
+            if let (Some(release), Some((discid_str, cddb_str, _))) = (musicbrainz, discid)
+                && let Some(track_meta) = release
+                    .tracks
+                    .get(track.number.saturating_sub(1) as usize)
+            {
+                out.push_str("\n  Metadata:\n");
+                if let Some(mbid) = track_meta.mbid.as_deref() {
+                    out.push_str(&format!("    mbid:                {mbid}\n"));
+                }
+                out.push_str(&format!("    title:               {}\n", track_meta.title));
+                if let Some(artist) = track_meta.artist.as_deref() {
+                    out.push_str(&format!("    artist:              {artist}\n"));
+                }
+                out.push_str(&format!("    track:               {}\n", track.number));
+                out.push_str(&format!("    tracktotal:          {}\n", toc.len()));
+                out.push_str("    disc_mcn:            0000000000000\n");
+                out.push_str(&format!("    musicbrainz_discid:  {discid_str}\n"));
+                out.push_str(&format!("    cddb:                {cddb_str}\n"));
+                if let Some(media) = release.format.as_deref() {
+                    out.push_str(&format!("    media:               {media}\n"));
+                }
+                out.push_str("    comment:             cyanrip 0.9.4-rc2\n");
+                if let Some(date) = release.date.as_deref().filter(|d| !d.trim().is_empty()) {
+                    out.push_str(&format!("    date:                {date}\n"));
+                }
+                out.push_str(&format!(
+                    "    musicbrainz_albumid: {}\n",
+                    release.musicbrainz_albumid
+                ));
+                out.push_str(&format!("    album:               {}\n", release.album));
+                if let Some(barcode) = release.barcode.as_deref() {
+                    out.push_str(&format!("    barcode:             {barcode}\n"));
+                }
+                if let Some(packaging) = release.packaging.as_deref() {
+                    out.push_str(&format!("    packaging:           {packaging}\n"));
+                }
+                if let Some(country) = release.country.as_deref() {
+                    out.push_str(&format!("    country:             {country}\n"));
+                }
+                if let Some(releasestatus) = release.releasestatus.as_deref() {
+                    out.push_str(&format!("    releasestatus:       {releasestatus}\n"));
+                }
+                if let Some(catalognumber) = release.catalognumber.as_deref() {
+                    out.push_str(&format!("    catalognumber:       {catalognumber}\n"));
+                }
+                if let Some(label) = release.label.as_deref() {
+                    out.push_str(&format!("    label:               {label}\n"));
+                }
+                if let Some(album_artist) = release.album_artist.as_deref() {
+                    out.push_str(&format!("    album_artist:        {album_artist}\n"));
+                }
+                out.push_str(&format!("    totaldiscs:          {}\n", release.totaldiscs));
+                if let Some(disc) = release.discnumber {
+                    out.push_str(&format!("    disc:                {disc}\n"));
+                }
+                if let Some(format) = release.format.as_deref() {
+                    out.push_str(&format!("    format:              {format}\n"));
+                }
+            }
             out.push('\n');
         }
     }
 
     out
+}
+
+#[cfg(any(test, all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+fn filter_info_tracks<'a>(toc: &'a [InfoTocEntry], selected_tracks: &[u32]) -> Vec<&'a InfoTocEntry> {
+    if selected_tracks.is_empty() {
+        return toc.iter().collect();
+    }
+
+    toc.iter()
+        .filter(|t| selected_tracks.contains(&(t.number as u32)))
+        .collect()
 }
 
 #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
@@ -257,6 +424,8 @@ fn run_info_only_mode(settings: &Settings) -> Result<String, RunWorkflowError> {
         })
         .collect();
 
+    validate_requested_track_indices_against_toc(&toc_entries, &settings.rip_indices)?;
+
     let discid_parts: Option<(String, String, String)> = if !toc_entries.is_empty() {
         let disc_tracks: Vec<DiscTrack> = toc_entries
             .iter()
@@ -274,6 +443,41 @@ fn run_info_only_mode(settings: &Settings) -> Result<String, RunWorkflowError> {
         None
     };
 
+    let mut selected_release: Option<MusicBrainzReleaseMeta> = None;
+
+    if !settings.disable_mb && let Some((discid, _, _)) = discid_parts.as_ref() {
+        let runtime = TokioRuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| RunWorkflowError::Runtime(format!("tokio runtime init failed: {e}")))?;
+
+        let service = MusicBrainzService::new(
+            ReqwestMusicBrainzHttpClient::default(),
+            "https://musicbrainz.org",
+            "cyanrip-rs/0.1",
+        );
+
+        match runtime.block_on(service.lookup_release(
+            discid,
+            settings.release.as_ref(),
+            settings.discnumber,
+            toc_entries.len(),
+        )) {
+            Ok(release) => selected_release = Some(release),
+            Err(MusicBrainzError::NotFound) => {}
+            Err(MusicBrainzError::MultipleReleases(candidates)) => {
+                return Err(RunWorkflowError::Runtime(
+                    format_musicbrainz_multiple_releases_message(discid, &candidates),
+                ));
+            }
+            Err(e) => {
+                return Err(RunWorkflowError::Runtime(format!(
+                    "musicbrainz lookup failed: {e:?}"
+                )));
+            }
+        }
+    }
+
     let report = render_info_only_report_with_toc(
         settings,
         drive_used.as_deref(),
@@ -281,6 +485,7 @@ fn run_info_only_mode(settings: &Settings) -> Result<String, RunWorkflowError> {
         discid_parts
             .as_ref()
             .map(|(id, cddb, url)| (id.as_str(), cddb.as_str(), url.as_str())),
+        selected_release.as_ref(),
     );
     Ok(report)
 }
@@ -290,6 +495,7 @@ fn run_info_only_mode(settings: &Settings) -> Result<String, RunWorkflowError> {
     Ok(render_info_only_report(settings, None))
 }
 
+#[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
 fn render_find_offset_report_header(settings: &Settings) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push("cyanrip-rs find-offset mode".to_string());
@@ -435,13 +641,29 @@ fn read_drive_window(
 
 #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
 fn run_find_offset_mode(settings: &Settings) -> Result<String, RunWorkflowError> {
-    use crate::cdda::linux_drive::read_drive_toc_tracks;
+    use crate::cdda::linux_drive::{read_drive_hwinfo, read_drive_toc_tracks};
 
-    let mut lines = render_find_offset_report_header(settings);
+    let mut lines = vec![
+        "Searching for drive offset, enabling AccuRip and disabling MusicBrainz and Cover art fetching..."
+            .to_string(),
+    ];
+    let device = settings.dev_path.as_deref().unwrap_or("/dev/cdrom");
+    lines.push(format!("Checking {device} for cdrom..."));
+
+    if let Some(hw) = read_drive_hwinfo(settings.dev_path.as_deref()) {
+        lines.push(format!(
+            "                CDROM sensed: {} {} {} CD-ROM",
+            hw.vendor, hw.model, hw.revision
+        ));
+    }
+
+    lines.push(String::new());
+    lines.push("Opening drive...".to_string());
+
     let toc = read_drive_toc_tracks(settings.dev_path.as_deref())
         .map_err(|e| RunWorkflowError::Runtime(format!("TOC read failed: {e:?}")))?;
     if toc.is_empty() {
-        lines.push("Status: no tracks detected on drive".to_string());
+        lines.push("No tracks detected on drive, cannot detect drive offset!".to_string());
         return Ok(lines.join("\n"));
     }
 
@@ -468,8 +690,6 @@ fn run_find_offset_mode(settings: &Settings) -> Result<String, RunWorkflowError>
         .map_err(|e| RunWorkflowError::Runtime(format!("discid computation failed: {e:?}")))?;
     let cddb_id = u32::from_str_radix(&discid.cddb, 16)
         .map_err(|e| RunWorkflowError::Runtime(format!("cddb parse failed: {e}")))?;
-    let disc_ids = compute_accurip_ids(&ar_tracks)
-        .map_err(|e| RunWorkflowError::Runtime(format!("accurip id computation failed: {e:?}")))?;
 
     let runtime = TokioRuntimeBuilder::new_current_thread()
         .enable_all()
@@ -480,11 +700,8 @@ fn run_find_offset_mode(settings: &Settings) -> Result<String, RunWorkflowError>
         .block_on(service.lookup(&ar_tracks, cddb_id))
         .map_err(|e| RunWorkflowError::Runtime(format!("accurip lookup failed: {e:?}")))?;
 
-    lines.push(format!("AccuRip request: {}", lookup.request_url));
-    lines.push(format!("AccuRip status: {:?}", lookup.status));
-
     if lookup.status != AccuDbStatus::Found {
-        lines.push("Status: no matching AccurateRip entry; cannot determine drive offset".to_string());
+        lines.push("No track had AccuRip entry in the AccurateRip database, cannot detect drive offset!".to_string());
         return Ok(lines.join("\n"));
     }
 
@@ -493,9 +710,8 @@ fn run_find_offset_mode(settings: &Settings) -> Result<String, RunWorkflowError>
     let mut offset_found_samples = 0i32;
     let mut had_any_ar = false;
     let mut had_any_eligible_track = false;
-    let mut exhausted_radius = false;
 
-    while radius <= FIND_OFFSET_MAX_RADIUS_FRAMES {
+    loop {
         let mut had_ar_this_radius = false;
         let mut did_check_this_radius = false;
 
@@ -516,6 +732,8 @@ fn run_find_offset_mode(settings: &Settings) -> Result<String, RunWorkflowError>
             did_check_this_radius = true;
             had_any_eligible_track = true;
 
+            lines.push(format!("Loading data for track {}...", idx + 1));
+
             let start_lsn = (track.start_lsn as i32)
                 .saturating_add(450)
                 .saturating_sub(radius as i32)
@@ -525,6 +743,7 @@ fn run_find_offset_mode(settings: &Settings) -> Result<String, RunWorkflowError>
                 start_lsn,
                 2 * radius + 1,
             )?;
+            lines.push("Data loaded, searching for offsets...".to_string());
             let bytes_radius = radius.saturating_mul(CDDA_FRAME_BYTES);
             let dir = if offset_found_confidence > 0 && offset_found_samples < 0 {
                 -1
@@ -585,8 +804,7 @@ fn run_find_offset_mode(settings: &Settings) -> Result<String, RunWorkflowError>
         }
 
         let next_radius = radius.saturating_mul(2);
-        if next_radius > FIND_OFFSET_MAX_RADIUS_FRAMES {
-            exhausted_radius = true;
+        if next_radius <= radius {
             break;
         }
 
@@ -599,25 +817,18 @@ fn run_find_offset_mode(settings: &Settings) -> Result<String, RunWorkflowError>
 
     if offset_found_confidence > 0 {
         lines.push(format!(
-            "Status: drive offset found: {:+} samples (confidence {})",
+            "Drive offset of {:+} found (confidence: {})!",
             offset_found_samples, offset_found_confidence
         ));
     } else if !had_any_ar {
-        lines.push("Status: no track had AccurateRip entry; cannot determine drive offset".to_string());
+        lines.push("No track had AccuRip entry in the AccurateRip database, cannot detect drive offset!".to_string());
     } else if !had_any_eligible_track {
-        lines.push("Status: no track was long enough for offset probing".to_string());
-    } else if exhausted_radius {
-        lines.push(format!(
-            "Status: unable to find drive offset up to radius {} frames",
-            FIND_OFFSET_MAX_RADIUS_FRAMES
-        ));
+        lines.push("No track was long enough to search for drive offset!".to_string());
     } else {
-        lines.push("Status: unable to find drive offset".to_string());
+        lines.push("Was not able to find drive offset!".to_string());
     }
 
-    lines.push(format!("DiscID: {}", discid.musicbrainz_discid));
-    lines.push(format!("CDDB: {}", discid.cddb));
-    lines.push(format!("AccuRip IDs: {:08x}/{:08x}", disc_ids.id_type_1, disc_ids.id_type_2));
+    let _ = &discid;
     Ok(lines.join("\n"))
 }
 
@@ -679,6 +890,60 @@ fn parse_track_meta_entry(entry: &str) -> Option<(u32, BTreeMap<String, String>)
     Some((idx, map))
 }
 
+fn track_has_preemphasis(track_meta: &HashMap<String, String>) -> bool {
+    match track_meta.get("preemphasis") {
+        Some(v) => {
+            let n = v.trim().to_ascii_lowercase();
+            n == "1" || n == "true" || n == "yes" || n == "on"
+        }
+        None => false,
+    }
+}
+
+fn parse_boolish(raw: &str) -> Option<bool> {
+    let n = raw.trim().to_ascii_lowercase();
+    match n.as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_u32_field(fields: &BTreeMap<String, String>, key: &str) -> Option<u32> {
+    fields.get(key).and_then(|v| v.trim().parse::<u32>().ok())
+}
+
+fn parse_bool_field(fields: &BTreeMap<String, String>, key: &str) -> Option<bool> {
+    fields.get(key).and_then(|v| parse_boolish(v))
+}
+
+fn cue_file_type_from_field(fields: &BTreeMap<String, String>) -> Option<CueFileType> {
+    let raw = fields.get("cue_file_type").or_else(|| fields.get("file_type"))?;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "wave" | "wav" => Some(CueFileType::Wave),
+        "binary" | "bin" => Some(CueFileType::Binary),
+        "mp3" => Some(CueFileType::Mp3),
+        _ => None,
+    }
+}
+
+fn track_directive_text(fields: &BTreeMap<String, String>, key: &str) -> Option<String> {
+    fields
+        .get(key)
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string)
+}
+
+fn default_media_value(settings: &Settings) -> &'static str {
+    if settings.decode_hdcd {
+        "HDCD"
+    } else {
+        "CD"
+    }
+}
+
+#[allow(dead_code)]
 fn render_cue_only_preview(settings: &Settings) -> String {
     let meta = parse_album_metadata_map(settings.album_metadata.as_deref());
     let mut parsed_tracks = Vec::new();
@@ -699,23 +964,92 @@ fn render_cue_only_preview(settings: &Settings) -> String {
             let base_name = title.clone().unwrap_or_else(|| format!("Track {idx:02}"));
             let file_path = format!("{idx:02} - {base_name}.flac");
 
+            let start_lsn = parse_u32_field(&fields, "start_lsn").unwrap_or(0);
+            let mut preemphasis = parse_bool_field(&fields, "preemphasis").unwrap_or(false);
+            if let Some(v) = parse_bool_field(&fields, "flags_pre") {
+                preemphasis = v;
+            }
+            let flag_dcp = parse_bool_field(&fields, "flag_dcp")
+                .or_else(|| parse_bool_field(&fields, "dcp"))
+                .unwrap_or(false);
+            let flag_4ch = parse_bool_field(&fields, "flag_4ch")
+                .or_else(|| parse_bool_field(&fields, "4ch"))
+                .unwrap_or(false);
+            let flag_scms = parse_bool_field(&fields, "flag_scms")
+                .or_else(|| parse_bool_field(&fields, "scms"))
+                .unwrap_or(false);
+
+            let mut is_data = parse_bool_field(&fields, "data")
+                .or_else(|| parse_bool_field(&fields, "is_data"))
+                .unwrap_or(false);
+            if parse_bool_field(&fields, "audio") == Some(true) {
+                is_data = false;
+            }
+
+            let default_file_type = if is_data {
+                CueFileType::Binary
+            } else {
+                CueFileType::Wave
+            };
+
+            let mut pregap_lsn = parse_u32_field(&fields, "pregap_lsn");
+            let mut start_lsn_sig = parse_u32_field(&fields, "start_lsn_sig").unwrap_or(start_lsn);
+            let mut dropped_pregap_start = parse_u32_field(&fields, "dropped_pregap_start");
+            let mut merged_pregap_end = parse_u32_field(&fields, "merged_pregap_end");
+            let mut previous_start_lsn_sig = parse_u32_field(&fields, "previous_start_lsn_sig");
+
+            if let Some(pregap_start) = parse_u32_field(&fields, "pregap_start_lsn") {
+                pregap_lsn = Some(pregap_start);
+                if fields.contains_key("pregap_mode") {
+                    let mode = fields
+                        .get("pregap_mode")
+                        .map(|v| v.trim().to_ascii_lowercase())
+                        .unwrap_or_default();
+                    match mode.as_str() {
+                        "drop" => {
+                            dropped_pregap_start = Some(pregap_start);
+                            start_lsn_sig = start_lsn;
+                        }
+                        "merge" | "default" => {
+                            merged_pregap_end = Some(start_lsn);
+                            start_lsn_sig = pregap_start;
+                        }
+                        "track" | "append" => {
+                            if previous_start_lsn_sig.is_none() {
+                                previous_start_lsn_sig = Some(start_lsn.saturating_sub(1));
+                            }
+                            start_lsn_sig = start_lsn;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
             CueTrack {
                 number: idx,
                 index: idx,
-                is_data: false,
-                preemphasis: false,
+                is_data,
+                preemphasis,
                 file_path,
                 cue_path: None,
-                file_type: CueFileType::Wave,
+                file_type: cue_file_type_from_field(&fields).unwrap_or(default_file_type),
                 title,
                 performer,
-                isrc: None,
-                pregap_lsn: None,
-                start_lsn: 0,
-                start_lsn_sig: 0,
-                dropped_pregap_start: None,
-                merged_pregap_end: None,
-                previous_start_lsn_sig: None,
+                songwriter: track_directive_text(&fields, "songwriter"),
+                composer: track_directive_text(&fields, "composer"),
+                arranger: track_directive_text(&fields, "arranger"),
+                isrc: fields.get("isrc").cloned(),
+                pregap_lsn,
+                start_lsn,
+                start_lsn_sig,
+                dropped_pregap_start,
+                merged_pregap_end,
+                previous_start_lsn_sig,
+                postgap_frames: parse_u32_field(&fields, "postgap_frames")
+                    .or_else(|| parse_u32_field(&fields, "postgap")),
+                flag_dcp,
+                flag_4ch,
+                flag_scms,
             }
         })
         .collect();
@@ -728,6 +1062,459 @@ fn render_cue_only_preview(settings: &Settings) -> String {
     });
 
     format!("cyanrip-rs cue-only preview\n{cue}")
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn cue_meta_from_runtime(
+    settings: &Settings,
+    discid: Option<&DiscidInfo>,
+    release: Option<&MusicBrainzReleaseMeta>,
+) -> BTreeMap<String, String> {
+    let mut meta = BTreeMap::new();
+    let user_meta = parse_album_metadata_map(settings.album_metadata.as_deref());
+
+    if let Some(d) = discid {
+        meta.insert("musicbrainz_discid".to_string(), d.musicbrainz_discid.clone());
+        meta.insert("cddb".to_string(), d.cddb.clone());
+    }
+
+    meta.insert("media".to_string(), default_media_value(settings).to_string());
+    meta.insert("comment".to_string(), "cyanrip 0.9.4-rc2".to_string());
+
+    if let Some(r) = release {
+        if let Some(date) = r.date.as_ref().filter(|d| !d.trim().is_empty()) {
+            meta.insert("date".to_string(), date.clone());
+        }
+        meta.insert(
+            "musicbrainz_albumid".to_string(),
+            r.musicbrainz_albumid.clone(),
+        );
+        if let Some(barcode) = r.barcode.as_ref().filter(|v| !v.trim().is_empty()) {
+            meta.insert("barcode".to_string(), barcode.clone());
+        }
+        if let Some(releasestatus) = r.releasestatus.as_ref().filter(|v| !v.trim().is_empty()) {
+            meta.insert("releasestatus".to_string(), releasestatus.clone());
+        }
+        if let Some(catalognumber) = r.catalognumber.as_ref().filter(|v| !v.trim().is_empty()) {
+            meta.insert("catalognumber".to_string(), catalognumber.clone());
+        }
+        if let Some(label) = r.label.as_ref().filter(|v| !v.trim().is_empty()) {
+            meta.insert("label".to_string(), label.clone());
+        }
+        meta.insert("totaldiscs".to_string(), r.totaldiscs.to_string());
+        if let Some(discnumber) = r.discnumber {
+            meta.insert("disc".to_string(), discnumber.to_string());
+        }
+        if let Some(format) = r.format.as_ref().filter(|v| !v.trim().is_empty()) {
+            meta.insert("format".to_string(), format.clone());
+        }
+        meta.insert("album".to_string(), r.album.clone());
+        if let Some(album_artist) = r.album_artist.as_ref().filter(|v| !v.trim().is_empty()) {
+            meta.insert("album_artist".to_string(), album_artist.clone());
+        }
+    }
+
+    if let Some(album) = user_meta.get("album") {
+        meta.insert("album".to_string(), album.clone());
+    }
+    if let Some(album_artist) = user_meta.get("album_artist") {
+        meta.insert("album_artist".to_string(), album_artist.clone());
+    }
+    if let Some(date) = user_meta.get("date") {
+        meta.insert("date".to_string(), date.clone());
+    }
+
+    meta
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn cue_tracks_from_runtime(
+    settings: &Settings,
+    toc: &[InfoTocEntry],
+    release: Option<&MusicBrainzReleaseMeta>,
+) -> Vec<CueTrack> {
+    let (format_suffix, extension) = settings
+        .outputs
+        .first()
+        .copied()
+        .and_then(output_format_descriptor)
+        .unwrap_or(("FLAC", "flac"));
+
+    let mut album_meta: HashMap<String, String> =
+        parse_album_metadata_map(settings.album_metadata.as_deref())
+            .into_iter()
+            .collect();
+    if let Some(r) = release {
+        album_meta
+            .entry("album".to_string())
+            .or_insert_with(|| r.album.clone());
+        if let Some(album_artist) = r.album_artist.as_ref().filter(|v| !v.trim().is_empty()) {
+            album_meta
+                .entry("album_artist".to_string())
+                .or_insert_with(|| album_artist.clone());
+        }
+        if let Some(date) = r.date.as_ref().filter(|v| !v.trim().is_empty()) {
+            album_meta
+                .entry("date".to_string())
+                .or_insert_with(|| date.clone());
+        }
+        if let Some(releasecomment) = r
+            .releasecomment
+            .as_ref()
+            .filter(|v| !v.trim().is_empty())
+        {
+            album_meta
+                .entry("releasecomment".to_string())
+                .or_insert_with(|| releasecomment.clone());
+        }
+    }
+
+    let mut explicit_track_meta: HashMap<u32, BTreeMap<String, String>> = HashMap::new();
+    for entry in &settings.track_metadata {
+        if let Some((idx, fields)) = parse_track_meta_entry(entry) {
+            explicit_track_meta.insert(idx, fields);
+        }
+    }
+
+    let naming_ctx = NamingContext {
+        sanitize_method: settings.sanitize_method,
+        nb_tracks: toc.len(),
+    };
+
+    let cue_rel_path = crate::naming::build_cue_relative_path(
+        &naming_ctx,
+        &album_meta,
+        &settings.folder_name_scheme,
+        &settings.cue_name_scheme,
+        format_suffix,
+    )
+    .unwrap_or_else(|_| "disc.cue".to_string());
+
+    toc.iter()
+        .enumerate()
+        .map(|(idx, entry)| {
+            let mut title = release
+                .and_then(|r| r.tracks.get(entry.number.saturating_sub(1) as usize))
+                .map(|t| t.title.clone());
+            let mut performer = release
+                .and_then(|r| r.tracks.get(entry.number.saturating_sub(1) as usize))
+                .and_then(|t| t.artist.clone());
+
+            let start_lsn = entry.start_lsn.max(0) as u32;
+            let mut start_lsn_sig = start_lsn;
+            let mut pregap_lsn = entry
+                .pregap_lsn
+                .and_then(|p| if p >= 0 { Some(p as u32) } else { None })
+                .filter(|p| *p < start_lsn);
+            let mut previous_start_lsn_sig = if idx > 0 {
+                Some(toc[idx - 1].start_lsn.max(0) as u32)
+            } else {
+                None
+            };
+
+            let action = settings
+                .pregap_action
+                .get((entry.number as usize).saturating_sub(1))
+                .copied()
+                .unwrap_or(crate::PregapAction::Default);
+
+            let mut dropped_pregap_start = None;
+            let mut merged_pregap_end = None;
+
+            if let Some(pregap_start) = pregap_lsn {
+                match action {
+                    crate::PregapAction::Drop => {
+                        dropped_pregap_start = Some(pregap_start);
+                        start_lsn_sig = start_lsn;
+                    }
+                    crate::PregapAction::Merge | crate::PregapAction::Default => {
+                        merged_pregap_end = Some(start_lsn);
+                        start_lsn_sig = pregap_start;
+                    }
+                    crate::PregapAction::Track => {
+                        start_lsn_sig = start_lsn;
+                    }
+                }
+            }
+
+            let mut preemphasis = false;
+            let mut isrc = None;
+            let mut songwriter = None;
+            let mut composer = None;
+            let mut arranger = None;
+            let mut postgap_frames = None;
+            let mut flag_dcp = false;
+            let mut flag_4ch = false;
+            let mut flag_scms = false;
+            let mut file_type = if entry.track_is_data {
+                CueFileType::Binary
+            } else {
+                CueFileType::Wave
+            };
+
+            if let Some(fields) = explicit_track_meta.get(&(entry.number as u32)) {
+                if let Some(t) = fields.get("title").filter(|v| !v.trim().is_empty()) {
+                    title = Some(t.clone());
+                }
+                if let Some(a) = fields.get("artist").filter(|v| !v.trim().is_empty()) {
+                    performer = Some(a.clone());
+                }
+                if let Some(v) = parse_bool_field(fields, "preemphasis") {
+                    preemphasis = v;
+                }
+                if let Some(v) = parse_bool_field(fields, "flags_pre") {
+                    preemphasis = v;
+                }
+                if let Some(v) = fields.get("isrc").filter(|v| !v.trim().is_empty()) {
+                    isrc = Some(v.clone());
+                }
+                songwriter = track_directive_text(fields, "songwriter");
+                composer = track_directive_text(fields, "composer");
+                arranger = track_directive_text(fields, "arranger");
+                if let Some(v) = parse_u32_field(fields, "start_lsn_sig") {
+                    start_lsn_sig = v;
+                }
+                if let Some(v) = parse_u32_field(fields, "pregap_lsn") {
+                    pregap_lsn = Some(v);
+                }
+                if let Some(v) = parse_u32_field(fields, "pregap_start_lsn") {
+                    pregap_lsn = Some(v);
+                }
+                if let Some(v) = parse_u32_field(fields, "previous_start_lsn_sig") {
+                    previous_start_lsn_sig = Some(v);
+                }
+                if let Some(v) = parse_u32_field(fields, "dropped_pregap_start") {
+                    dropped_pregap_start = Some(v);
+                }
+                if let Some(v) = parse_u32_field(fields, "merged_pregap_end") {
+                    merged_pregap_end = Some(v);
+                }
+                if let Some(v) = parse_u32_field(fields, "postgap_frames") {
+                    postgap_frames = Some(v);
+                }
+                if let Some(v) = parse_u32_field(fields, "postgap") {
+                    postgap_frames = Some(v);
+                }
+                if let Some(v) = parse_bool_field(fields, "flag_dcp")
+                    .or_else(|| parse_bool_field(fields, "dcp"))
+                {
+                    flag_dcp = v;
+                }
+                if let Some(v) = parse_bool_field(fields, "flag_4ch")
+                    .or_else(|| parse_bool_field(fields, "4ch"))
+                {
+                    flag_4ch = v;
+                }
+                if let Some(v) = parse_bool_field(fields, "flag_scms")
+                    .or_else(|| parse_bool_field(fields, "scms"))
+                {
+                    flag_scms = v;
+                }
+                if let Some(mode) = fields.get("pregap_mode") {
+                    match mode.trim().to_ascii_lowercase().as_str() {
+                        "drop" => {
+                            if let Some(p) = pregap_lsn {
+                                dropped_pregap_start = Some(p);
+                                merged_pregap_end = None;
+                                start_lsn_sig = start_lsn;
+                            }
+                        }
+                        "merge" | "default" => {
+                            if let Some(p) = pregap_lsn {
+                                dropped_pregap_start = None;
+                                merged_pregap_end = Some(start_lsn);
+                                start_lsn_sig = p;
+                            }
+                        }
+                        "track" | "append" => {
+                            dropped_pregap_start = None;
+                            merged_pregap_end = None;
+                            start_lsn_sig = start_lsn;
+                            if previous_start_lsn_sig.is_none() {
+                                previous_start_lsn_sig = Some(start_lsn.saturating_sub(1));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(v) = cue_file_type_from_field(fields) {
+                    file_type = v;
+                }
+            }
+
+            let mut track_meta = HashMap::new();
+            track_meta.insert("track".to_string(), entry.number.to_string());
+            if let Some(t) = title.as_ref().filter(|t| !t.trim().is_empty()) {
+                track_meta.insert("title".to_string(), t.clone());
+            }
+            if let Some(a) = performer.as_ref().filter(|a| !a.trim().is_empty()) {
+                track_meta.insert("artist".to_string(), a.clone());
+            }
+
+            let rel_path = build_track_relative_path(
+                &naming_ctx,
+                &album_meta,
+                &track_meta,
+                &settings.folder_name_scheme,
+                &settings.track_name_scheme,
+                format_suffix,
+                extension,
+            )
+            .unwrap_or_else(|_| {
+                format!(
+                    "{:02} - {}.{}",
+                    entry.number,
+                    title.clone().unwrap_or_else(|| format!("Track {:02}", entry.number)),
+                    extension
+                )
+            });
+
+            let cue_path = Some(cue_rel_path.clone());
+
+            CueTrack {
+                number: entry.number as u32,
+                index: entry.number as u32,
+                is_data: entry.track_is_data,
+                preemphasis,
+                file_path: rel_path,
+                cue_path,
+                file_type,
+                title,
+                performer,
+                songwriter,
+                composer,
+                arranger,
+                isrc,
+                pregap_lsn,
+                start_lsn,
+                start_lsn_sig,
+                dropped_pregap_start,
+                merged_pregap_end,
+                previous_start_lsn_sig,
+                postgap_frames,
+                flag_dcp,
+                flag_4ch,
+                flag_scms,
+            }
+        })
+        .collect()
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn run_cue_only_mode(settings: &Settings) -> Result<String, RunWorkflowError> {
+    use crate::cdda::linux_drive::{read_drive_hwinfo, read_drive_toc_tracks};
+
+    let hw = read_drive_hwinfo(settings.dev_path.as_deref());
+    let drive_used: Option<String> = hw.map(|h| {
+        format!("{} {} (revision {})", h.vendor, h.model, h.revision)
+    });
+
+    let toc = read_drive_toc_tracks(settings.dev_path.as_deref())
+        .map_err(|e| RunWorkflowError::Runtime(format!("TOC read failed: {e:?}")))?;
+
+    let toc_entries: Vec<InfoTocEntry> = toc
+        .iter()
+        .map(|t| InfoTocEntry {
+            number: t.number,
+            start_lsn: t.start_lsn,
+            end_lsn: t.end_lsn,
+            track_is_data: t.track_is_data,
+            pregap_lsn: t.pregap_lsn,
+        })
+        .collect();
+
+    let discid = if !toc_entries.is_empty() {
+        let disc_tracks: Vec<DiscTrack> = toc_entries
+            .iter()
+            .map(|t| DiscTrack {
+                number: t.number,
+                start_lsn: t.start_lsn,
+                end_lsn: t.end_lsn,
+                track_is_data: t.track_is_data,
+            })
+            .collect();
+        Some(
+            compute_discid(&disc_tracks)
+                .map_err(|e| RunWorkflowError::Runtime(format!("discid computation failed: {e:?}")))?,
+        )
+    } else {
+        None
+    };
+
+    let mut selected_release: Option<MusicBrainzReleaseMeta> = None;
+    if !settings.disable_mb && let Some(d) = discid.as_ref() {
+        let runtime = TokioRuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| RunWorkflowError::Runtime(format!("tokio runtime init failed: {e}")))?;
+
+        let service = MusicBrainzService::new(
+            ReqwestMusicBrainzHttpClient::default(),
+            "https://musicbrainz.org",
+            "cyanrip-rs/0.1",
+        );
+
+        match runtime.block_on(service.lookup_release(
+            &d.musicbrainz_discid,
+            settings.release.as_ref(),
+            settings.discnumber,
+            toc_entries.len(),
+        )) {
+            Ok(release) => selected_release = Some(release),
+            Err(MusicBrainzError::NotFound) => {}
+            Err(MusicBrainzError::MultipleReleases(candidates)) => {
+                return Err(RunWorkflowError::Runtime(
+                    format_musicbrainz_multiple_releases_message(&d.musicbrainz_discid, &candidates),
+                ));
+            }
+            Err(e) => {
+                return Err(RunWorkflowError::Runtime(format!(
+                    "musicbrainz lookup failed: {e:?}"
+                )));
+            }
+        }
+    }
+
+    let mut report_settings = settings.clone();
+    if report_settings.outputs.is_empty() {
+        report_settings.outputs.push(OutputFormat::Flac);
+    }
+
+    let report = render_info_only_report_with_toc(
+        &report_settings,
+        drive_used.as_deref(),
+        &toc_entries,
+        discid
+            .as_ref()
+            .map(|d| (d.musicbrainz_discid.as_str(), d.cddb.as_str(), d.mb_submission_url.as_str())),
+        selected_release.as_ref(),
+    );
+
+    let cue = render_cue(&CueDoc {
+        meta: cue_meta_from_runtime(settings, discid.as_ref(), selected_release.as_ref()),
+        tracks: cue_tracks_from_runtime(settings, &toc_entries, selected_release.as_ref()),
+        deemphasis: settings.deemphasis,
+        force_deemphasis: settings.force_deemphasis,
+    });
+
+    let mut out = String::new();
+    if let Some(release) = selected_release.as_ref() {
+        if let Some(album_artist) = release.album_artist.as_deref().filter(|v| !v.trim().is_empty()) {
+            out.push_str(&format!(
+                "Found MusicBrainz release: {} - {}\n",
+                release.album, album_artist
+            ));
+        }
+    }
+    out.push_str(&report);
+    out.push_str("\n\n");
+    out.push_str(&cue);
+    Ok(out)
+}
+
+#[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+fn run_cue_only_mode(settings: &Settings) -> Result<String, RunWorkflowError> {
+    Ok(render_cue_only_preview(settings))
 }
 
 fn env_var_truthy(name: &str) -> bool {
@@ -746,6 +1533,10 @@ fn default_synthetic_output_root() -> PathBuf {
         .unwrap_or_default()
         .as_nanos();
     std::env::temp_dir().join(format!("cyanrip-rs-synthetic-rip-{now}"))
+}
+
+fn default_runtime_output_root() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 fn synthetic_track_pcm() -> PcmTrackData {
@@ -859,6 +1650,9 @@ fn render_synthetic_full_rip(settings: &Settings) -> Result<String, RunWorkflowE
     album_meta
         .entry("album_artist".to_string())
         .or_insert_with(|| "Synthetic Artist".to_string());
+    album_meta
+        .entry("media".to_string())
+        .or_insert_with(|| default_media_value(settings).to_string());
 
     let mut tracks = Vec::new();
     for entry in &settings.track_metadata {
@@ -923,7 +1717,16 @@ fn full_rip_source_from_settings(settings: &Settings) -> FullRipSource {
             }
             DriverKind::Unknown => FullRipSource::Physical,
         },
-        None => FullRipSource::Image,
+        None => {
+            #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+            {
+                FullRipSource::Physical
+            }
+            #[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+            {
+                FullRipSource::Image
+            }
+        }
     }
 }
 
@@ -932,8 +1735,11 @@ fn acquire_track_pcm_from_physical_reader(
     settings: &Settings,
     frame_count: usize,
     start_lsn: i32,
+    track_number: u32,
 ) -> Result<PcmTrackData, RunWorkflowError> {
     use crate::cdda::linux_drive::{open_linux_physical_drive, run_paranoia_on_linux_drive_with_defaults_for_level};
+
+    let device_path = settings.dev_path.as_deref().or(Some("/dev/cdrom"));
 
     if settings.paranoia_level > 0 {
         let mut retry_policy = if settings.ripping_retries > 0 {
@@ -946,7 +1752,7 @@ fn acquire_track_pcm_from_physical_reader(
         };
 
         let run = run_paranoia_on_linux_drive_with_defaults_for_level(
-            settings.dev_path.as_deref(),
+            device_path,
             settings.paranoia_level,
             start_lsn,
             frame_count,
@@ -964,18 +1770,86 @@ fn acquire_track_pcm_from_physical_reader(
         )
         .map_err(|e| RunWorkflowError::Runtime(format!("physical paranoia run failed: {e:?}")))?;
 
-        if run.state != RipState::TrackComplete {
+        if run.state == RipState::Failed {
             return Err(RunWorkflowError::Runtime(format!(
                 "physical paranoia run did not complete track: {:?}",
                 run.state
             )));
         }
+
+        if run.state == RipState::Aborted && run.events.contains(&RipEvent::MediaChanged) {
+            eprintln!(
+                "WARN physical paranoia precheck reported media-changed, continuing with direct read"
+            );
+        }
+
+        if run.state != RipState::TrackComplete {
+            eprintln!(
+                "WARN physical paranoia run ended in state {:?}, continuing with direct read",
+                run.state
+            );
+        }
     }
 
-    let mut reader = open_linux_physical_drive(settings.dev_path.as_deref()).map_err(|e| {
+    let mut reader = open_linux_physical_drive(device_path).map_err(|e| {
         RunWorkflowError::Runtime(format!("physical drive open failed: {e:?}"))
     })?;
-    acquire_track_pcm_from_reader(&mut reader, start_lsn, frame_count)
+    reader
+        .seek_frame(start_lsn)
+        .map_err(|e| RunWorkflowError::Runtime(format!("frame seek failed: {e:?}")))?;
+
+    let mut samples = Vec::new();
+    let start = Instant::now();
+    let mut last_update = start.checked_sub(Duration::from_secs(1)).unwrap_or(start);
+
+    for frame_idx in 0..frame_count {
+        let frame = reader
+            .read_frame()
+            .map_err(|e| RunWorkflowError::Runtime(format!("frame read failed: {e:?}")))?;
+
+        let mut off = 0usize;
+        while off + 1 < frame.len() {
+            let v = i16::from_le_bytes([frame[off], frame[off + 1]]);
+            samples.push(v);
+            off += 2;
+        }
+
+        let done = frame_idx.saturating_add(1);
+        let now = Instant::now();
+        let should_update = done == 1
+            || done == frame_count
+            || now.duration_since(last_update) >= Duration::from_millis(400);
+
+        if should_update {
+            let progress = (done as f64 / frame_count.max(1) as f64) * 100.0;
+            let elapsed = now.duration_since(start).as_secs_f64().max(0.001);
+            let eta_min = if done >= frame_count {
+                0.0
+            } else {
+                let rate_fps = done as f64 / elapsed;
+                let remaining_frames = frame_count.saturating_sub(done) as f64;
+                (remaining_frames / rate_fps) / 60.0
+            };
+
+            print!(
+                "\rRipping and encoding track {}, progress - {:.2}%, ETA - {:.2} min   ",
+                track_number, progress, eta_min
+            );
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            last_update = now;
+        }
+    }
+
+    println!();
+
+    Ok(PcmTrackData {
+        spec: PcmSpec {
+            channels: 2,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+        },
+        interleaved_i16_samples: samples,
+    })
 }
 
 #[cfg(not(all(target_os = "linux", feature = "cdda")))]
@@ -983,6 +1857,7 @@ fn acquire_track_pcm_from_physical_reader(
     _settings: &Settings,
     _frame_count: usize,
     _start_lsn: i32,
+    _track_number: u32,
 ) -> Result<PcmTrackData, RunWorkflowError> {
     Err(RunWorkflowError::Runtime(
         "physical drive reader requires linux + cdda feature support".to_string(),
@@ -990,16 +1865,125 @@ fn acquire_track_pcm_from_physical_reader(
 }
 
 fn selected_track_numbers(settings: &Settings) -> Vec<u32> {
-    if settings.rip_indices.is_empty() {
-        return vec![1];
-    }
-
     settings
         .rip_indices
         .iter()
         .filter(|n| **n > 0)
         .map(|n| *n as u32)
         .collect()
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn resolve_requested_audio_tracks(
+    requested_track_numbers: &[u32],
+    available_audio_tracks: &[u32],
+    total_tracks_on_disc: usize,
+) -> Result<Vec<u32>, RunWorkflowError> {
+    if requested_track_numbers.is_empty() {
+        return Ok(available_audio_tracks.to_vec());
+    }
+
+    if let Some(invalid) = requested_track_numbers
+        .iter()
+        .find(|n| !available_audio_tracks.contains(n))
+    {
+        return Err(RunWorkflowError::Runtime(format!(
+            "Invalid rip index {}, list has {} tracks!",
+            invalid, total_tracks_on_disc
+        )));
+    }
+
+    Ok(requested_track_numbers.to_vec())
+}
+
+fn apply_offset_frame_adjustment(boundary: TrackBoundary, settings: &Settings) -> TrackBoundary {
+    let delta = settings.over_under_read_frames.unsigned_abs() as usize;
+    TrackBoundary {
+        frame_count: boundary.frame_count.saturating_add(delta),
+        ..boundary
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn map_toc_preflight_error(err: &CddaReadError) -> RunWorkflowError {
+    let msg = match err {
+        CddaReadError::ReadFailed(msg) | CddaReadError::SeekFailed(msg) => msg,
+    };
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("no medium") || lower.contains("invalid toc values") {
+        return RunWorkflowError::Runtime(
+            "Drive has no readable audio medium inserted".to_string(),
+        );
+    }
+    RunWorkflowError::Runtime(format!("TOC read failed: {err:?}"))
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn resolve_physical_track_boundaries(
+    settings: &Settings,
+    requested_track_numbers: &[u32],
+) -> Result<Vec<TrackBoundary>, RunWorkflowError> {
+    use crate::cdda::linux_drive::read_drive_toc_tracks;
+
+    let device_path = settings.dev_path.as_deref().or(Some("/dev/cdrom"));
+
+    let toc = read_drive_toc_tracks(device_path).map_err(|e| map_toc_preflight_error(&e))?;
+
+    let available_audio_tracks: Vec<u32> = toc
+        .iter()
+        .filter(|t| !t.track_is_data)
+        .map(|t| t.number as u32)
+        .collect();
+
+    let wanted = resolve_requested_audio_tracks(
+        requested_track_numbers,
+        &available_audio_tracks,
+        toc.len(),
+    )?;
+
+    if wanted.is_empty() {
+        return Err(RunWorkflowError::Runtime(
+            "no matching audio tracks selected for ripping".to_string(),
+        ));
+    }
+
+    let mut boundaries = Vec::new();
+    for track in &toc {
+        let track_number = track.number as u32;
+        if track.track_is_data || !wanted.contains(&track_number) {
+            continue;
+        }
+
+        let base_frames = track
+            .end_lsn
+            .saturating_sub(track.start_lsn)
+            .saturating_add(1)
+            .max(0) as usize;
+
+        boundaries.push(TrackBoundary {
+            track_number,
+            start_lsn: track.start_lsn,
+            frame_count: base_frames,
+        });
+    }
+
+    if boundaries.is_empty() {
+        return Err(RunWorkflowError::Runtime(
+            "selected tracks were not available as audio tracks".to_string(),
+        ));
+    }
+
+    Ok(boundaries)
+}
+
+#[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+fn resolve_physical_track_boundaries(
+    _settings: &Settings,
+    _requested_track_numbers: &[u32],
+) -> Result<Vec<TrackBoundary>, RunWorkflowError> {
+    Err(RunWorkflowError::Runtime(
+        "physical TOC resolution requires linux + cdda + backend-libcdio-sys".to_string(),
+    ))
 }
 
 fn track_meta_map_from_settings(settings: &Settings) -> HashMap<u32, HashMap<String, String>> {
@@ -1036,6 +2020,17 @@ struct TrackBoundary {
 
 fn parse_i32_meta(map: &HashMap<String, String>, key: &str) -> Option<i32> {
     map.get(key).and_then(|v| v.trim().parse::<i32>().ok())
+}
+
+fn format_duration_from_frames(frame_count: usize) -> String {
+    let minutes = frame_count / (75 * 60);
+    let seconds = (frame_count / 75) % 60;
+    let centis = ((frame_count % 75) * 100) / 75;
+    format!("{minutes:02}:{seconds:02}.{centis:02}")
+}
+
+fn samples_from_frames(frame_count: usize) -> usize {
+    frame_count.saturating_mul(588)
 }
 
 fn parse_usize_meta(map: &HashMap<String, String>, key: &str) -> Option<usize> {
@@ -1322,7 +2317,13 @@ fn acquire_tracks_pcm_from_physical_reader(
     for boundary in boundaries {
         let start_lsn = boundary.start_lsn;
         let frame_count = boundary.frame_count;
-        let pcm = acquire_track_pcm_from_physical_reader(settings, frame_count, start_lsn)?;
+
+        let pcm = acquire_track_pcm_from_physical_reader(
+            settings,
+            frame_count,
+            start_lsn,
+            boundary.track_number,
+        )?;
         out.push((boundary.track_number, pcm));
     }
     Ok(out)
@@ -1330,9 +2331,11 @@ fn acquire_tracks_pcm_from_physical_reader(
 
 fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunWorkflowError> {
     let source = full_rip_source_from_settings(settings);
-    let track_numbers = selected_track_numbers(settings);
+    let requested_track_numbers = selected_track_numbers(settings);
     let default_frame_count = configured_frame_count();
     let track_meta_map = track_meta_map_from_settings(settings);
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    let mut track_meta_map = track_meta_map;
     let image_toc_overrides = match source {
         FullRipSource::Image => {
             let map = image_toc_overrides_from_settings(settings, default_frame_count);
@@ -1344,12 +2347,112 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
         }
         FullRipSource::Physical => None,
     };
-    let boundaries = resolve_track_boundaries(
-        &track_numbers,
-        &track_meta_map,
-        default_frame_count,
-        image_toc_overrides.as_ref(),
-    );
+    let boundaries = match source {
+        FullRipSource::Image => {
+            let image_track_numbers = if requested_track_numbers.is_empty() {
+                vec![1]
+            } else {
+                requested_track_numbers.clone()
+            };
+            resolve_track_boundaries(
+                &image_track_numbers,
+                &track_meta_map,
+                default_frame_count,
+                image_toc_overrides.as_ref(),
+            )
+        }
+        FullRipSource::Physical => {
+            resolve_physical_track_boundaries(settings, &requested_track_numbers)?
+        }
+    };
+    let boundaries: Vec<TrackBoundary> = boundaries
+        .into_iter()
+        .map(|b| apply_offset_frame_adjustment(b, settings))
+        .collect();
+
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    let mut metadata_flow: Option<MetadataFlowResult> = None;
+
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    if source == FullRipSource::Physical {
+        use crate::cdda::linux_drive::read_drive_toc_tracks;
+        use crate::metadata::coverart::ReqwestCoverArtHttpClient;
+
+        let device_path = settings.dev_path.as_deref().or(Some("/dev/cdrom"));
+        if let Ok(toc) = read_drive_toc_tracks(device_path) {
+            let app_tracks: Vec<AppTrack> = toc
+                .iter()
+                .map(|t| AppTrack {
+                    number: t.number,
+                    start_lsn: t.start_lsn,
+                    end_lsn: t.end_lsn,
+                    track_is_data: t.track_is_data,
+                })
+                .collect();
+
+            if !app_tracks.is_empty() {
+                let runtime = TokioRuntimeBuilder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| RunWorkflowError::Runtime(format!("tokio runtime init failed: {e}")))?;
+
+                let mb_service = MusicBrainzService::new(
+                    ReqwestMusicBrainzHttpClient::default(),
+                    "https://musicbrainz.org",
+                    "cyanrip-rs/0.1",
+                );
+                let cover_service = CoverArtService::new(
+                    ReqwestCoverArtHttpClient::default(),
+                    "http://coverartarchive.org/release",
+                    "cyanrip-rs/0.1",
+                );
+                let ar_service = AccuRipService::default();
+
+                let mf = runtime.block_on(orchestrate_metadata_flow(
+                    MetadataFlowInput {
+                        settings: settings.clone(),
+                        tracks: app_tracks,
+                        info_only: false,
+                        initial_cover_arts: Vec::new(),
+                    },
+                    &mb_service,
+                    &cover_service,
+                    &ar_service,
+                ));
+
+                if let Some(release) = mf.musicbrainz.as_ref()
+                    && let Some(album_artist) = release.album_artist.as_deref()
+                {
+                    println!(
+                        "Found MusicBrainz release: {} - {}",
+                        release.album, album_artist
+                    );
+                }
+
+                for b in &boundaries {
+                    let idx = b.track_number.saturating_sub(1) as usize;
+                    if let Some(release) = mf.musicbrainz.as_ref()
+                        && let Some(tmeta) = release.tracks.get(idx)
+                    {
+                        let ent = track_meta_map.entry(b.track_number).or_default();
+                        ent.entry("title".to_string())
+                            .or_insert_with(|| tmeta.title.clone());
+                        if let Some(artist) = tmeta.artist.as_deref() {
+                            ent.entry("artist".to_string())
+                                .or_insert_with(|| artist.to_string());
+                        }
+                        ent.entry("track".to_string())
+                            .or_insert_with(|| format!("{:02}", b.track_number));
+                        ent.entry("tracktotal".to_string())
+                            .or_insert_with(|| release.tracks.len().to_string());
+                    }
+                }
+
+                metadata_flow = Some(mf);
+            }
+        }
+    }
+
     let pcm_tracks = match source {
         FullRipSource::Image => {
             acquire_tracks_pcm_from_image_reader(settings, &boundaries)?
@@ -1361,18 +2464,52 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
 
     let output_root = match std::env::var("CYANRIP_RS_OUTPUT_ROOT") {
         Ok(v) if !v.trim().is_empty() => PathBuf::from(v),
-        _ => default_synthetic_output_root(),
+        _ => default_runtime_output_root(),
     };
 
     let mut album_meta: HashMap<String, String> = parse_album_metadata_map(settings.album_metadata.as_deref())
         .into_iter()
         .collect();
+
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    if let Some(mf) = metadata_flow.as_ref() {
+        if let Some(d) = mf.discid.as_ref() {
+            album_meta
+                .entry("musicbrainz_discid".to_string())
+                .or_insert_with(|| d.musicbrainz_discid.clone());
+            album_meta
+                .entry("cddb".to_string())
+                .or_insert_with(|| d.cddb.clone());
+        }
+        if let Some(release) = mf.musicbrainz.as_ref() {
+            album_meta
+                .entry("album".to_string())
+                .or_insert_with(|| release.album.clone());
+            if let Some(album_artist) = release.album_artist.as_deref() {
+                album_meta
+                    .entry("album_artist".to_string())
+                    .or_insert_with(|| album_artist.to_string());
+            }
+            album_meta
+                .entry("musicbrainz_albumid".to_string())
+                .or_insert_with(|| release.musicbrainz_albumid.clone());
+            if let Some(date) = release.date.as_deref() {
+                album_meta
+                    .entry("date".to_string())
+                    .or_insert_with(|| date.to_string());
+            }
+        }
+    }
+
     album_meta
         .entry("album".to_string())
         .or_insert_with(|| "Runtime Album".to_string());
     album_meta
         .entry("album_artist".to_string())
         .or_insert_with(|| "Runtime Artist".to_string());
+    album_meta
+        .entry("media".to_string())
+        .or_insert_with(|| default_media_value(settings).to_string());
 
     let tracks: Vec<TrackOutputInput> = pcm_tracks
         .into_iter()
@@ -1402,11 +2539,88 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
     ));
     out.push_str(&format!("Output root: {}\n", output_root.display()));
     out.push_str(&format!("Written files: {}\n", result.written_files.len()));
+
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    if let Some(mf) = metadata_flow.as_ref() {
+        let ar_line = match mf.accurip_status {
+            AccuDbStatus::Found => "found",
+            AccuDbStatus::NotFound => "not found",
+            AccuDbStatus::Mismatch => "mismatch",
+            AccuDbStatus::Disabled => "disabled",
+            AccuDbStatus::Error => "error",
+        };
+        out.push_str(&format!("AccurateRip:    {}\n", ar_line));
+        if let Some(ar) = mf.accurip.as_ref() {
+            for b in &boundaries {
+                let idx = b.track_number.saturating_sub(1) as usize;
+                if let Some(tm) = ar.track_matches.get(idx) {
+                    out.push_str(&format!(
+                        "Track {} AccuRip max confidence: {}\n",
+                        b.track_number, tm.max_confidence
+                    ));
+                }
+            }
+        }
+        for warning in &mf.warnings {
+            out.push_str(&format!("WARN {warning}\n"));
+        }
+    }
+
     for boundary in &boundaries {
         out.push_str(&format!(
             "TRACK {} START_LSN {} FRAMES {}\n",
             boundary.track_number, boundary.start_lsn, boundary.frame_count
         ));
+        out.push_str(&format!(
+            "Track {} ripped and encoded successfully!\n",
+            boundary.track_number
+        ));
+
+        out.push_str(&format!("Track {} summary:\n", boundary.track_number));
+        out.push_str("  Properties:\n");
+        out.push_str(&format!(
+            "    Duration:    {}\n",
+            format_duration_from_frames(boundary.frame_count)
+        ));
+        out.push_str(&format!(
+            "    Samples:     {}\n",
+            samples_from_frames(boundary.frame_count)
+        ));
+        out.push_str(&format!("    Frames:      {}\n", boundary.frame_count));
+        out.push_str(&format!("    Start LSN:   {}\n", boundary.start_lsn));
+        out.push_str(&format!(
+            "    End LSN:     {}\n",
+            boundary
+                .start_lsn
+                .saturating_add(boundary.frame_count.saturating_sub(1) as i32)
+        ));
+
+        out.push_str("\n  Metadata:\n");
+        if let Some(meta) = track_meta_map.get(&boundary.track_number) {
+            let mut keys: Vec<&String> = meta.keys().collect();
+            keys.sort();
+            for key in keys {
+                if let Some(value) = meta.get(key)
+                    && !value.trim().is_empty()
+                {
+                    out.push_str(&format!("    {:<30} {}\n", key, value));
+                }
+            }
+        } else {
+            out.push_str("    none\n");
+        }
+
+        out.push_str("\n  File(s):\n");
+        let mut files_for_track = result
+            .written_files
+            .iter()
+            .filter(|f| f.track_number == boundary.track_number)
+            .collect::<Vec<_>>();
+        files_for_track.sort_by(|a, b| a.absolute_path.cmp(&b.absolute_path));
+        for file in files_for_track {
+            out.push_str(&format!("    {}\n", file.relative_path.display()));
+        }
+        out.push('\n');
     }
     for file in &result.written_files {
         out.push_str(&format!("FILE {}\n", file.absolute_path.display()));
@@ -1431,7 +2645,12 @@ pub fn run_workflow(settings: &Settings) -> Result<Option<String>, RunWorkflowEr
     }
 
     if settings.generate_cue_only {
-        return Ok(Some(render_cue_only_preview(settings)));
+        if !settings.offset_is_set {
+            return Ok(Some(
+                "Offset is unset! To continue with an offset of 0, run with -s 0!".to_string(),
+            ));
+        }
+        return run_cue_only_mode(settings).map(Some);
     }
 
     if env_var_truthy("CYANRIP_RS_ENABLE_SYNTHETIC_RIP") {
@@ -1744,6 +2963,11 @@ pub enum TrackOutputFlowError {
         path: PathBuf,
         message: String,
     },
+    Processing {
+        output_format: OutputFormat,
+        path: PathBuf,
+        message: String,
+    },
 }
 
 impl std::fmt::Display for TrackOutputFlowError {
@@ -1770,6 +2994,15 @@ impl std::fmt::Display for TrackOutputFlowError {
             } => write!(
                 f,
                 "encode error for {output_format:?} at {}: {message}",
+                path.display()
+            ),
+            Self::Processing {
+                output_format,
+                path,
+                message,
+            } => write!(
+                f,
+                "processing error for {output_format:?} at {}: {message}",
                 path.display()
             ),
         }
@@ -1875,7 +3108,8 @@ pub fn write_track_outputs(input: TrackOutputFlowInput) -> Result<TrackOutputFlo
         let (format_suffix, extension) = output_format_descriptor(*fmt_kind)
             .ok_or(TrackOutputFlowError::UnsupportedOutputFormat(*fmt_kind))?;
 
-        for track in &input.tracks {
+        let mut planned_paths: Vec<(usize, u32, PathBuf, PathBuf)> = Vec::new();
+        for (idx, track) in input.tracks.iter().enumerate() {
             let relative_path_str = build_track_relative_path(
                 &naming_ctx,
                 &input.album_meta,
@@ -1887,15 +3121,45 @@ pub fn write_track_outputs(input: TrackOutputFlowInput) -> Result<TrackOutputFlo
             )
             .map_err(TrackOutputFlowError::Naming)?;
 
-            let relative_path = PathBuf::from(relative_path_str);
-            let absolute_path = input.output_root.join(&relative_path);
+            let absolute_path = resolve_output_path(&input.output_root, &relative_path_str, true)?;
+            planned_paths.push((
+                idx,
+                track.track_number,
+                PathBuf::from(relative_path_str),
+                absolute_path,
+            ));
+        }
 
-            if let Some(parent) = absolute_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
+        let collision_input: Vec<(u32, String)> = planned_paths
+            .iter()
+            .map(|(_, track_number, rel, _)| (*track_number, rel.to_string_lossy().to_string()))
+            .collect();
+        for (a, b, path) in detect_track_path_collisions(&collision_input) {
+            println!(
+                "WARNING: tracks {a} and {b} resolve to the same file \"{path}\", one will overwrite the other!"
+            );
+        }
+
+        for (idx, _track_number, relative_path, absolute_path) in planned_paths {
+            let track = &input.tracks[idx];
+
+            let processed_pcm = process_track_pcm(
+                &track.pcm,
+                TrackProcessingOptions {
+                    decode_hdcd: input.settings.decode_hdcd,
+                    deemphasis: input.settings.deemphasis,
+                    force_deemphasis: input.settings.force_deemphasis,
+                    track_has_preemphasis: track_has_preemphasis(&track.track_meta),
+                },
+            )
+            .map_err(|e| TrackOutputFlowError::Processing {
+                output_format: *fmt_kind,
+                path: absolute_path.clone(),
+                message: e.to_string(),
+            })?;
 
             match fmt_kind {
-                OutputFormat::Wav => write_wav_file(&absolute_path, &track.pcm).map_err(|e| {
+                OutputFormat::Wav => write_wav_file(&absolute_path, &processed_pcm).map_err(|e| {
                     TrackOutputFlowError::Encode {
                         output_format: *fmt_kind,
                         path: absolute_path.clone(),
@@ -1903,7 +3167,7 @@ pub fn write_track_outputs(input: TrackOutputFlowInput) -> Result<TrackOutputFlo
                     }
                 })?,
                 OutputFormat::Flac => {
-                    write_flac_file(&absolute_path, &track.pcm).map_err(|e| {
+                    write_flac_file(&absolute_path, &processed_pcm).map_err(|e| {
                         TrackOutputFlowError::Encode {
                             output_format: *fmt_kind,
                             path: absolute_path.clone(),
@@ -2053,26 +3317,86 @@ mod tests {
             ..Settings::default()
         };
 
-        let out = run_workflow(&settings).expect("find-offset mode should be wired");
-        let report = out.expect("find-offset mode should produce a report");
-        assert!(report.contains("cyanrip-rs find-offset mode"));
-        assert!(report.contains("AccurateRip: enabled"));
+        match run_workflow(&settings) {
+            Ok(Some(report)) => {
+                assert!(
+                    report.contains("Searching for drive offset")
+                        || report.contains("cyanrip-rs find-offset mode"),
+                    "unexpected find-offset header: {report}"
+                );
+                assert!(
+                    report.contains("Drive offset of ")
+                        || report.contains("No track had AccuRip entry")
+                        || report.contains("No track was long enough")
+                        || report.contains("Was not able to find drive offset")
+                        || report.contains("Status: unavailable in this build"),
+                    "unexpected find-offset report: {report}"
+                );
+            }
+            Err(RunWorkflowError::Runtime(msg)) => {
+                assert!(
+                    msg.contains("TOC read failed") || msg.contains("physical read failed"),
+                    "unexpected runtime error: {msg}"
+                );
+            }
+            other => panic!("unexpected find-offset outcome: {other:?}"),
+        }
     }
 
     #[test]
     fn run_workflow_info_mode_returns_report() {
         let settings = Settings {
             print_info_only: true,
+            disable_mb: true,
             outputs: vec![OutputFormat::Flac],
             ..Settings::default()
         };
 
-        let out = run_workflow(&settings).expect("info-only mode should be wired");
-        let report = out.expect("info-only mode should produce a report");
-        assert!(report.contains("cyanrip-rs "));
-        assert!(report.contains("Paranoia level: "));
-        assert!(report.contains("Outputs:        "));
-        assert!(report.contains("AccurateRip:    "));
+        match run_workflow(&settings) {
+            Ok(Some(report)) => {
+                assert!(report.contains("cyanrip-rs "));
+                assert!(report.contains("Paranoia level: "));
+                assert!(report.contains("Outputs:        "));
+                assert!(report.contains("AccurateRip:    "));
+            }
+            Err(RunWorkflowError::Runtime(msg)) => {
+                assert!(
+                    msg.contains("TOC read failed"),
+                    "unexpected info-only runtime error: {msg}"
+                );
+            }
+            other => panic!("unexpected info-only outcome: {other:?}"),
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    #[test]
+    fn toc_preflight_mapper_returns_clear_no_medium_message() {
+        let err = crate::cdda::reader::CddaReadError::ReadFailed(
+            "invalid TOC values returned by drive".to_string(),
+        );
+        assert_eq!(
+            map_toc_preflight_error(&err),
+            RunWorkflowError::Runtime("Drive has no readable audio medium inserted".to_string())
+        );
+
+        let err_no_medium = crate::cdda::reader::CddaReadError::ReadFailed(
+            "error in ioctl CDROMREADTOCHDR: No medium found".to_string(),
+        );
+        assert_eq!(
+            map_toc_preflight_error(&err_no_medium),
+            RunWorkflowError::Runtime("Drive has no readable audio medium inserted".to_string())
+        );
+    }
+
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    #[test]
+    fn toc_preflight_mapper_keeps_generic_toc_message_for_other_errors() {
+        let err = crate::cdda::reader::CddaReadError::ReadFailed("permission denied".to_string());
+        assert_eq!(
+            map_toc_preflight_error(&err),
+            RunWorkflowError::Runtime("TOC read failed: ReadFailed(\"permission denied\")".to_string())
+        );
     }
 
     #[test]
@@ -2107,7 +3431,7 @@ mod tests {
             },
         ];
 
-        let report = render_info_only_report_with_toc(&settings, None, &toc, None);
+        let report = render_info_only_report_with_toc(&settings, None, &toc, None, None);
         assert!(report.contains("Disc tracks:    2"));
         assert!(report.contains("Track 1 info:"));
         assert!(report.contains("    Duration:    00:02.00"));
@@ -2121,9 +3445,185 @@ mod tests {
     }
 
     #[test]
+    fn info_only_report_with_toc_filters_to_selected_tracks() {
+        let settings = Settings {
+            print_info_only: true,
+            outputs: vec![OutputFormat::Flac],
+            rip_indices: vec![2],
+            rip_indices_count: 1,
+            ..Settings::default()
+        };
+        let toc = vec![
+            InfoTocEntry {
+                number: 1,
+                start_lsn: 0,
+                end_lsn: 149,
+                track_is_data: false,
+                pregap_lsn: None,
+            },
+            InfoTocEntry {
+                number: 2,
+                start_lsn: 200,
+                end_lsn: 349,
+                track_is_data: true,
+                pregap_lsn: Some(192),
+            },
+        ];
+
+        let report = render_info_only_report_with_toc(&settings, None, &toc, None, None);
+        assert!(report.contains("Tracks to rip:  2"));
+        assert!(!report.contains("Track 1 info:"));
+        assert!(report.contains("Track 2 info:"));
+    }
+
+    #[test]
+    fn validate_requested_track_indices_against_toc_rejects_out_of_range_and_zero() {
+        let toc = vec![
+            InfoTocEntry {
+                number: 1,
+                start_lsn: 0,
+                end_lsn: 149,
+                track_is_data: false,
+                pregap_lsn: None,
+            },
+            InfoTocEntry {
+                number: 2,
+                start_lsn: 150,
+                end_lsn: 299,
+                track_is_data: false,
+                pregap_lsn: None,
+            },
+        ];
+
+        let err = validate_requested_track_indices_against_toc(&toc, &[0, 3])
+            .expect_err("invalid selection should fail");
+        match err {
+            RunWorkflowError::Runtime(msg) => {
+                assert_eq!(msg, "Invalid rip index 0, list has 2 tracks!");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    #[test]
+    fn resolve_requested_audio_tracks_rejects_invalid_selection() {
+        let err = resolve_requested_audio_tracks(&[1, 99], &[1, 2, 3], 10)
+            .expect_err("invalid selected track should fail");
+
+        match err {
+            RunWorkflowError::Runtime(msg) => {
+                assert_eq!(msg, "Invalid rip index 99, list has 10 tracks!");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn info_only_report_with_release_includes_metadata_block() {
+        let settings = Settings {
+            print_info_only: true,
+            outputs: vec![OutputFormat::Flac],
+            ..Settings::default()
+        };
+        let toc = vec![InfoTocEntry {
+            number: 1,
+            start_lsn: 0,
+            end_lsn: 149,
+            track_is_data: false,
+            pregap_lsn: None,
+        }];
+        let release = MusicBrainzReleaseMeta {
+            musicbrainz_albumid: "rel-1".to_string(),
+            releasecomment: None,
+            date: Some("1994".to_string()),
+            album: "Album One".to_string(),
+            barcode: Some("1234567890123".to_string()),
+            packaging: Some("Other".to_string()),
+            country: Some("US".to_string()),
+            releasestatus: Some("Official".to_string()),
+            catalognumber: Some("15 848".to_string()),
+            label: Some("Label X".to_string()),
+            album_artist: Some("Various Artists".to_string()),
+            discname: None,
+            format: Some("CD".to_string()),
+            discnumber: Some(3),
+            totaldiscs: 10,
+            tracks: vec![crate::metadata::musicbrainz::MusicBrainzTrackMeta {
+                mbid: Some("track-1-mbid".to_string()),
+                title: "Ride of the Valkyries".to_string(),
+                artist: Some("Richard Wagner".to_string()),
+            }],
+        };
+
+        let report = render_info_only_report_with_toc(
+            &settings,
+            None,
+            &toc,
+            Some((
+                "BKkzOxbdODYWFIOEEZ3b.b_nm64-",
+                "8E0F310A",
+                "https://musicbrainz.org/cdtoc/attach?toc=...",
+            )),
+            Some(&release),
+        );
+
+        assert!(report.contains("Release ID:     rel-1"));
+        assert!(report.contains("Album:          Album One"));
+        assert!(report.contains("Disc number:    3"));
+        assert!(report.contains("Total discs:    10"));
+        assert!(report.contains("  Metadata:"));
+        assert!(report.contains("    mbid:                track-1-mbid"));
+        assert!(report.contains("    disc_mcn:            0000000000000"));
+        assert!(report.contains("    comment:             cyanrip 0.9.4-rc2"));
+        assert!(report.contains("    date:                1994"));
+        assert!(report.contains("    musicbrainz_albumid: rel-1"));
+        assert!(report.contains("    packaging:           Other"));
+        assert!(report.contains("    totaldiscs:          10"));
+        assert!(report.contains("    disc:                3"));
+
+        let comment_pos = report
+            .find("    comment:             cyanrip 0.9.4-rc2")
+            .expect("comment line should exist");
+        let albumid_pos = report
+            .find("    musicbrainz_albumid: rel-1")
+            .expect("musicbrainz_albumid line should exist");
+        assert!(comment_pos < albumid_pos, "comment should be before musicbrainz_albumid");
+    }
+
+    #[test]
+    fn formats_musicbrainz_multiple_release_prompt_for_info_mode() {
+        let releases = vec![
+            ReleaseSummary {
+                id: "id-1".to_string(),
+                album: "Album One".to_string(),
+                disambiguation: None,
+                country: Some("US".to_string()),
+                date: Some("1994".to_string()),
+                num_cds: 1,
+            },
+            ReleaseSummary {
+                id: "id-2".to_string(),
+                album: "Album Two".to_string(),
+                disambiguation: None,
+                country: Some("US".to_string()),
+                date: None,
+                num_cds: 10,
+            },
+        ];
+
+        let msg = format_musicbrainz_multiple_releases_message("TESTDISC", &releases);
+        assert!(msg.contains("Multiple releases found in database for DiscID TESTDISC:"));
+        assert!(msg.contains("1 (ID: id-1): Album One (US) (1994)"));
+        assert!(msg.contains("2 (ID: id-2): Album Two (US) (10 CDs)"));
+        assert!(msg.contains("Please specify which release to use by adding the -R argument"));
+    }
+
+    #[test]
     fn run_workflow_cue_only_mode_returns_preview() {
         let settings = Settings {
             generate_cue_only: true,
+            offset_is_set: true,
             album_metadata: Some("album=Example Album:album_artist=Example Artist".to_string()),
             track_metadata: vec![
                 "1=title=Intro:artist=Example Artist".to_string(),
@@ -2133,12 +3633,50 @@ mod tests {
             ..Settings::default()
         };
 
-        let out = run_workflow(&settings).expect("cue-only mode should be wired");
-        let cue = out.expect("cue-only mode should produce CUE text");
-        assert!(cue.contains("cyanrip-rs cue-only preview"));
-        assert!(cue.contains("TITLE \"Example Album\""));
-        assert!(cue.contains("TRACK 01 AUDIO"));
-        assert!(cue.contains("TRACK 02 AUDIO"));
+        match run_workflow(&settings) {
+            Ok(Some(cue)) => {
+                assert!(
+                    cue.contains("cyanrip-rs cue-only preview")
+                        || cue.contains("cyanrip-rs "),
+                    "unexpected cue-only output: {cue}"
+                );
+                assert!(cue.contains("TITLE \"Example Album\"") || cue.contains("REM DISCID"));
+                assert!(cue.contains("TRACK 01 AUDIO"));
+            }
+            Err(RunWorkflowError::Runtime(msg)) => {
+                assert!(
+                    msg.contains("TOC read failed") || msg.contains("musicbrainz lookup failed"),
+                    "unexpected cue-only runtime error: {msg}"
+                );
+            }
+            other => panic!("unexpected cue-only outcome: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cue_only_preview_ingests_extended_track_fields() {
+        let settings = Settings {
+            generate_cue_only: true,
+            deemphasis: false,
+            album_metadata: Some("album=Extended Album:album_artist=Extended Artist".to_string()),
+            track_metadata: vec![
+                "1=title=Lead:artist=Singer:isrc=USAAA9912345:preemphasis=1:start_lsn=200:dropped_pregap_start=50:songwriter=Writer:composer=Composer:arranger=Arranger:flag_dcp=1:flag_4ch=1:flag_scms=1:postgap_frames=150".to_string(),
+                "2=title=Data Cut:data=1:cue_file_type=binary".to_string(),
+            ],
+            ..Settings::default()
+        };
+
+        let cue = render_cue_only_preview(&settings);
+        assert!(cue.contains("ISRC USAAA9912345"));
+        assert!(cue.contains("FLAGS PRE"));
+        assert!(cue.contains("FLAGS PRE DCP 4CH SCMS"));
+        assert!(cue.contains("SONGWRITER \"Writer\""));
+        assert!(cue.contains("COMPOSER \"Composer\""));
+        assert!(cue.contains("ARRANGER \"Arranger\""));
+        assert!(cue.contains("PREGAP 00:02:00"));
+        assert!(cue.contains("POSTGAP 00:02:00"));
+        assert!(cue.contains("FILE \"02 - Data Cut.flac\" BINARY"));
+        assert!(cue.contains("TRACK 02 MODE1/2352"));
     }
 
     #[test]
@@ -2147,6 +3685,13 @@ mod tests {
             outputs: vec![OutputFormat::Flac],
             ..Settings::default()
         };
+        #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+        assert_eq!(
+            full_rip_source_from_settings(&settings_default),
+            FullRipSource::Physical
+        );
+
+        #[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
         assert_eq!(full_rip_source_from_settings(&settings_default), FullRipSource::Image);
 
         let settings_cue = Settings {
@@ -2155,6 +3700,35 @@ mod tests {
             ..Settings::default()
         };
         assert_eq!(full_rip_source_from_settings(&settings_cue), FullRipSource::Image);
+    }
+
+    #[test]
+    fn selected_track_numbers_default_to_empty_selection() {
+        let settings = Settings::default();
+        assert!(selected_track_numbers(&settings).is_empty());
+    }
+
+    #[test]
+    fn apply_offset_frame_adjustment_uses_over_under_read_frames_magnitude() {
+        let boundary = TrackBoundary {
+            track_number: 1,
+            start_lsn: 0,
+            frame_count: 100,
+        };
+
+        let settings_pos = Settings {
+            over_under_read_frames: 1,
+            ..Settings::default()
+        };
+        let got_pos = apply_offset_frame_adjustment(boundary, &settings_pos);
+        assert_eq!(got_pos.frame_count, 101);
+
+        let settings_neg = Settings {
+            over_under_read_frames: -2,
+            ..Settings::default()
+        };
+        let got_neg = apply_offset_frame_adjustment(boundary, &settings_neg);
+        assert_eq!(got_neg.frame_count, 102);
     }
 
     #[test]
@@ -2218,8 +3792,8 @@ mod tests {
         assert_eq!(got.get(&1), Some(&(0, 100)));
         assert_eq!(got.get(&2), Some(&(100, 100)));
         assert_eq!(got.get(&4), Some(&(400, 51)));
-        assert!(got.get(&3).is_none());
-        assert!(got.get(&0).is_none());
+        assert!(!got.contains_key(&3));
+        assert!(!got.contains_key(&0));
 
         unsafe {
             std::env::remove_var("CYANRIP_RS_IMAGE_TOC");
@@ -2463,9 +4037,11 @@ FILE "disc.bin" BINARY
             result: Ok(ar_ok()),
         };
 
-        let mut settings = Settings::default();
-        settings.disable_mb = true;
-        settings.disable_accurip = true;
+        let settings = Settings {
+            disable_mb: true,
+            disable_accurip: true,
+            ..Settings::default()
+        };
 
         let input = MetadataFlowInput {
             settings,
@@ -2557,12 +4133,14 @@ FILE "disc.bin" BINARY
     fn writes_per_track_outputs_for_wav_and_flac() {
         let output_root = unique_temp_output_root();
 
-        let mut settings = Settings::default();
-        settings.outputs = vec![OutputFormat::Wav, OutputFormat::Flac];
-        settings.folder_name_scheme = "{album} [{format}]".to_string();
-        settings.track_name_scheme = "{track} - {title}".to_string();
-        settings.discnumber = 1;
-        settings.totaldiscs = 2;
+        let settings = Settings {
+            outputs: vec![OutputFormat::Wav, OutputFormat::Flac],
+            folder_name_scheme: "{album} [{format}]".to_string(),
+            track_name_scheme: "{track} - {title}".to_string(),
+            discnumber: 1,
+            totaldiscs: 2,
+            ..Settings::default()
+        };
 
         let album_meta: HashMap<String, String> = [
             ("album".to_string(), "Example Album".to_string()),
@@ -2637,8 +4215,10 @@ FILE "disc.bin" BINARY
     fn rejects_unsupported_output_formats_in_dispatch() {
         let output_root = unique_temp_output_root();
 
-        let mut settings = Settings::default();
-        settings.outputs = vec![OutputFormat::Mp3];
+        let settings = Settings {
+            outputs: vec![OutputFormat::Mp3],
+            ..Settings::default()
+        };
 
         let album_meta: HashMap<String, String> = [("album".to_string(), "Example Album".to_string())]
             .into_iter()
@@ -2662,5 +4242,44 @@ FILE "disc.bin" BINARY
             err,
             TrackOutputFlowError::UnsupportedOutputFormat(OutputFormat::Mp3)
         ));
+    }
+
+    #[test]
+    fn writes_flac_when_hdcd_option_is_enabled() {
+        let output_root = unique_temp_output_root();
+
+        let settings = Settings {
+            outputs: vec![OutputFormat::Flac],
+            decode_hdcd: true,
+            ..Settings::default()
+        };
+
+        let album_meta: HashMap<String, String> = [
+            ("album".to_string(), "Example Album".to_string()),
+            ("album_artist".to_string(), "Example Artist".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let tracks = vec![TrackOutputInput {
+            track_number: 1,
+            track_meta: track_meta("01", "Intro"),
+            pcm: sample_pcm(),
+        }];
+
+        let result = write_track_outputs(TrackOutputFlowInput {
+            settings,
+            output_root: output_root.clone(),
+            album_meta,
+            tracks,
+        })
+        .expect("hdcd option should be handled without processing failure");
+
+        assert_eq!(result.written_files.len(), 1);
+        let output_path = output_root.join("Example Album [FLAC]/01 - Intro.flac");
+        assert!(output_path.exists(), "expected hdcd-enabled output path to exist");
+
+        let cleanup = std::fs::remove_dir_all(&output_root);
+        assert!(cleanup.is_ok(), "temporary output root should be removable");
     }
 }

@@ -15,43 +15,41 @@ fn main() {
     match cfg.action {
         CliAction::ShowOutputsHelp => {
             println!("{SUPPORTED_OUTPUTS_HELP}");
-            return;
         }
         CliAction::VerifyLog => {
             let path = cfg.settings.verify_log.as_deref().unwrap_or("<missing>");
             match verify_log_path(Path::new(path)) {
                 LogVerify::Valid => {
                     println!("Log \"{path}\" checksum valid.");
-                    return;
                 }
                 LogVerify::Mismatch => {
                     println!(
                         "Log \"{path}\" checksum mismatch, the file has been modified!"
                     );
+                    std::process::exit(1);
                 }
                 LogVerify::TrailingData => {
                     println!(
                         "Log \"{path}\" has data after the checksum, the file has been modified!"
                     );
+                    std::process::exit(1);
                 }
                 LogVerify::NoChecksum => {
                     println!("No FUN512 checksum found in \"{path}\"!");
+                    std::process::exit(1);
                 }
                 LogVerify::IoError => {
                     println!("Couldn't read \"{path}\"!");
+                    std::process::exit(1);
                 }
             }
-            std::process::exit(1);
         }
         CliAction::Run => {
             match run_workflow(&cfg.settings) {
                 Ok(Some(msg)) => {
                     println!("{msg}");
-                    return;
                 }
-                Ok(None) => {
-                    return;
-                }
+                Ok(None) => {}
                 Err(err) => {
                     eprintln!("{err}");
                     std::process::exit(1);

@@ -83,6 +83,8 @@ Validation behavior is frozen as follows:
 
 - mode conflicts:
 - info + cue-only is invalid and returns error
+- find-offset + info is invalid and returns error
+- find-offset + cue-only is invalid and returns error
 
 - release:
 - positive integer maps to index selection
@@ -123,6 +125,8 @@ Side-effect behavior is frozen:
 The following validation error messages are treated as stable contract strings:
 - Directory name scheme must contain {format} with multiple output formats!
 - -J (only generate a CUE sheet) cannot be used with -I (only print info)!
+- -f (find drive offset) cannot be used with -I (only print info)!
+- -f (find drive offset) cannot be used with -J (only generate a CUE sheet)!
 - Invalid max coverart size <n> (must be 250, 500, 1200 or -1)
 - Invalid sanitation method <value>
 - Invalid track idx for pregap: <n>
