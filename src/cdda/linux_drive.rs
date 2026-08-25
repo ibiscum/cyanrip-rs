@@ -50,6 +50,9 @@ pub struct LinuxPhysicalDriveReader<B: LinuxDriveBackend> {
 impl<B: LinuxDriveBackend> LinuxPhysicalDriveReader<B> {
     pub fn new(mut backend: B, device_path: Option<&str>) -> Result<Self, CddaReadError> {
         let handle = backend.open(device_path)?;
+        // Upstream primes media-change tracking once after opening the drive
+        // so stale "changed" state does not spuriously abort the first read loop.
+        let _ = backend.get_media_changed_code(handle);
         Ok(Self {
             backend,
             handle,

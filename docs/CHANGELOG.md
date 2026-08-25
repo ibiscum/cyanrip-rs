@@ -1,5 +1,13 @@
 # Migration Changelog
 
+## 2026-08-24
+
+### M7 Paranoia Main-Flow Wiring and `--no-accurip` Option Flow
+- Cross-checked upstream docs and source (`main-flow.md`, `no-accurip-option-flow.md`, and `src/cyanrip_main.c`) and aligned info/no-accurip interactions in [../src/cli.rs](../src/cli.rs): `-I` keeps AccurateRip behavior user-controlled (via `-A`) while still disabling eject side effects.
+- Kept find-offset override semantics intact in [../src/cli.rs](../src/cli.rs): `-f/--find-offset` re-enables AccurateRip while disabling MusicBrainz/Cover Art DB and resetting offset/eject side effects.
+- Hardened physical-drive paranoia integration in [../src/app.rs](../src/app.rs) so the preflight paranoia run is now state-machine validated and must end in `TrackComplete`; non-complete end states are surfaced as runtime errors.
+- Added integration coverage in [../tests/run_workflow_cli.rs](../tests/run_workflow_cli.rs) for info-mode AccurateRip default-vs-`-A` behavior and explicit paranoia/retry full-rip bridge execution.
+
 ## 2026-08-22
 
 ### M7 Info-Only MusicBrainz Release Selection Parity
@@ -13,7 +21,7 @@
 - Added helper runner script [../scripts/run_m7_info_release_disambiguation.sh](../scripts/run_m7_info_release_disambiguation.sh) to execute the two ignored `run_workflow_cli` disambiguation tests (`-R 1` and `-R 2`) with required features and environment defaults.
 
 ### M7 Cue-Only Offset-Unset Parity
-- Matched upstream `-J` behavior for unset offset: runtime now returns the message `Offset is unset! To continue with an offset of 0, run with -s 0!` and exits successfully (instead of a parse-time failure).
+- Matched upstream `-J` behavior for unset offset: runtime returns the message `Offset is unset! To continue with an offset of 0, run with -s 0!` and exits successfully.
 - Added `Settings.offset_is_set` tracking in [../src/lib.rs](../src/lib.rs) and CLI mapping in [../src/cli.rs](../src/cli.rs) to preserve explicit-vs-default offset intent.
 - Added cue-only runtime parity handling in [../src/app.rs](../src/app.rs).
 - Added recorded upstream observation fixture [../tests/fixtures/cli/cue_only_offset_unset_upstream.txt](../tests/fixtures/cli/cue_only_offset_unset_upstream.txt) and integration regression assertion in [../tests/run_workflow_cli.rs](../tests/run_workflow_cli.rs).

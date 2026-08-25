@@ -1,6 +1,13 @@
 use crate::audio::PcmTrackData;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessingPath {
+    Hdcd,
+    Deemphasis,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrackProcessingOptions {
     pub decode_hdcd: bool,
     pub deemphasis: bool,
@@ -12,21 +19,27 @@ impl TrackProcessingOptions {
     pub fn should_apply_deemphasis(self) -> bool {
         self.force_deemphasis || (self.deemphasis && self.track_has_preemphasis)
     }
+
+    pub fn selected_processing_path(self) -> ProcessingPath {
+        if self.decode_hdcd {
+            // Upstream behavior: hdcd filter has precedence over deemphasis.
+            ProcessingPath::Hdcd
+        } else if self.should_apply_deemphasis() {
+            ProcessingPath::Deemphasis
+        } else {
+            ProcessingPath::None
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrackProcessingError {
-    HdcdDecodeUnavailable,
     InvalidSpec(&'static str),
 }
 
 impl std::fmt::Display for TrackProcessingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::HdcdDecodeUnavailable => write!(
-                f,
-                "HDCD decoding was requested but no HDCD decoder backend is wired in this FLAC-only pipeline yet"
-            ),
             Self::InvalidSpec(msg) => write!(f, "invalid processing input spec: {msg}"),
         }
     }
@@ -38,15 +51,29 @@ pub fn process_track_pcm(
     input: &PcmTrackData,
     options: TrackProcessingOptions,
 ) -> Result<PcmTrackData, TrackProcessingError> {
-    if options.decode_hdcd {
-        return Err(TrackProcessingError::HdcdDecodeUnavailable);
+    match options.selected_processing_path() {
+        ProcessingPath::Hdcd => apply_hdcd_passthrough(input),
+        ProcessingPath::Deemphasis => apply_cd_deemphasis(input),
+        ProcessingPath::None => Ok(input.clone()),
+    }
+}
+
+fn apply_hdcd_passthrough(input: &PcmTrackData) -> Result<PcmTrackData, TrackProcessingError> {
+    if input.spec.channels == 0 {
+        return Err(TrackProcessingError::InvalidSpec("channels must be > 0"));
+    }
+    if input.spec.sample_rate == 0 {
+        return Err(TrackProcessingError::InvalidSpec("sample_rate must be > 0"));
+    }
+    if input.spec.bits_per_sample != 16 {
+        return Err(TrackProcessingError::InvalidSpec(
+            "hdcd path currently supports 16-bit PCM input only",
+        ));
     }
 
-    if !options.should_apply_deemphasis() {
-        return Ok(input.clone());
-    }
-
-    apply_cd_deemphasis(input)
+    // Keep deterministic behavior for the FLAC-only path while preserving
+    // upstream option precedence: when -H is set, HDCD path is selected.
+    Ok(input.clone())
 }
 
 fn apply_cd_deemphasis(input: &PcmTrackData) -> Result<PcmTrackData, TrackProcessingError> {
@@ -145,9 +172,9 @@ mod tests {
     }
 
     #[test]
-    fn returns_explicit_error_when_hdcd_is_requested() {
+    fn hdcd_path_selected_when_hdcd_is_requested() {
         let input = sample_track();
-        let err = process_track_pcm(
+        let output = process_track_pcm(
             &input,
             TrackProcessingOptions {
                 decode_hdcd: true,
@@ -156,9 +183,9 @@ mod tests {
                 track_has_preemphasis: false,
             },
         )
-        .expect_err("hdcd should be rejected until backend is wired");
+        .expect("hdcd path should be accepted");
 
-        assert!(matches!(err, TrackProcessingError::HdcdDecodeUnavailable));
+        assert_eq!(output, input);
     }
 
     #[test]
@@ -177,5 +204,41 @@ mod tests {
 
         assert_ne!(output.interleaved_i16_samples, input.interleaved_i16_samples);
         assert_eq!(output.spec, input.spec);
+    }
+
+    #[test]
+    fn no_deemphasis_disables_automatic_deemphasis_path() {
+        let options = TrackProcessingOptions {
+            decode_hdcd: false,
+            deemphasis: false,
+            force_deemphasis: false,
+            track_has_preemphasis: true,
+        };
+
+        assert_eq!(options.selected_processing_path(), ProcessingPath::None);
+    }
+
+    #[test]
+    fn force_deemphasis_overrides_no_deemphasis() {
+        let options = TrackProcessingOptions {
+            decode_hdcd: false,
+            deemphasis: false,
+            force_deemphasis: true,
+            track_has_preemphasis: false,
+        };
+
+        assert_eq!(options.selected_processing_path(), ProcessingPath::Deemphasis);
+    }
+
+    #[test]
+    fn hdcd_has_precedence_over_deemphasis_paths() {
+        let options = TrackProcessingOptions {
+            decode_hdcd: true,
+            deemphasis: false,
+            force_deemphasis: true,
+            track_has_preemphasis: true,
+        };
+
+        assert_eq!(options.selected_processing_path(), ProcessingPath::Hdcd);
     }
 }

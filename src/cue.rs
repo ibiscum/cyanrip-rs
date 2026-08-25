@@ -35,6 +35,9 @@ pub struct CueTrack {
     pub file_type: CueFileType,
     pub title: Option<String>,
     pub performer: Option<String>,
+    pub songwriter: Option<String>,
+    pub composer: Option<String>,
+    pub arranger: Option<String>,
     pub isrc: Option<String>,
     pub pregap_lsn: Option<u32>,
     pub start_lsn: u32,
@@ -42,6 +45,10 @@ pub struct CueTrack {
     pub dropped_pregap_start: Option<u32>,
     pub merged_pregap_end: Option<u32>,
     pub previous_start_lsn_sig: Option<u32>,
+    pub postgap_frames: Option<u32>,
+    pub flag_dcp: bool,
+    pub flag_4ch: bool,
+    pub flag_scms: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +84,15 @@ fn write_track_tags(out: &mut String, t: &CueTrack) {
     }
     if let Some(artist) = &t.performer {
         out.push_str(&format!("    PERFORMER \"{}\"\n", artist));
+    }
+    if let Some(songwriter) = &t.songwriter {
+        out.push_str(&format!("    SONGWRITER \"{}\"\n", songwriter));
+    }
+    if let Some(composer) = &t.composer {
+        out.push_str(&format!("    COMPOSER \"{}\"\n", composer));
+    }
+    if let Some(arranger) = &t.arranger {
+        out.push_str(&format!("    ARRANGER \"{}\"\n", arranger));
     }
 }
 
@@ -163,8 +179,21 @@ pub fn render_cue(doc: &CueDoc) -> String {
             (String::new(), frames_to_cue(0))
         };
 
+        let mut flags = Vec::new();
         if t.preemphasis && !doc.deemphasis && !doc.force_deemphasis {
-            out.push_str("    FLAGS PRE\n");
+            flags.push("PRE");
+        }
+        if t.flag_dcp {
+            flags.push("DCP");
+        }
+        if t.flag_4ch {
+            flags.push("4CH");
+        }
+        if t.flag_scms {
+            flags.push("SCMS");
+        }
+        if !flags.is_empty() {
+            out.push_str(&format!("    FLAGS {}\n", flags.join(" ")));
         }
 
         if let Some(drop_start) = t.dropped_pregap_start
@@ -172,6 +201,9 @@ pub fn render_cue(doc: &CueDoc) -> String {
         {
             out.push_str(&format!("    PREGAP {}\n", time_00));
             out.push_str(&format!("    INDEX 01 {}\n", time_01));
+            if let Some(postgap_frames) = t.postgap_frames {
+                out.push_str(&format!("    POSTGAP {}\n", frames_to_cue(postgap_frames)));
+            }
             continue;
         }
 
@@ -180,6 +212,10 @@ pub fn render_cue(doc: &CueDoc) -> String {
             out.push_str(&format!("    INDEX 01 {}\n", time_01));
         } else {
             out.push_str(&format!("    INDEX 01 {}\n", time_01));
+        }
+
+        if let Some(postgap_frames) = t.postgap_frames {
+            out.push_str(&format!("    POSTGAP {}\n", frames_to_cue(postgap_frames)));
         }
     }
 
@@ -222,6 +258,9 @@ mod tests {
                 file_type: CueFileType::Wave,
                 title: Some("Intro".into()),
                 performer: Some("Example Artist".into()),
+                songwriter: None,
+                composer: None,
+                arranger: None,
                 isrc: None,
                 pregap_lsn: None,
                 start_lsn: 0,
@@ -229,6 +268,10 @@ mod tests {
                 dropped_pregap_start: None,
                 merged_pregap_end: None,
                 previous_start_lsn_sig: None,
+                postgap_frames: None,
+                flag_dcp: false,
+                flag_4ch: false,
+                flag_scms: false,
             },
             CueTrack {
                 number: 2,
@@ -240,6 +283,9 @@ mod tests {
                 file_type: CueFileType::Wave,
                 title: Some("Outro".into()),
                 performer: Some("Example Artist".into()),
+                songwriter: None,
+                composer: None,
+                arranger: None,
                 isrc: None,
                 pregap_lsn: None,
                 start_lsn: 0,
@@ -247,6 +293,10 @@ mod tests {
                 dropped_pregap_start: None,
                 merged_pregap_end: None,
                 previous_start_lsn_sig: None,
+                postgap_frames: None,
+                flag_dcp: false,
+                flag_4ch: false,
+                flag_scms: false,
             },
         ];
 
@@ -279,6 +329,9 @@ mod tests {
                 file_type: CueFileType::Wave,
                 title: Some("Audio Track".into()),
                 performer: Some("Example Artist".into()),
+                songwriter: None,
+                composer: None,
+                arranger: None,
                 isrc: None,
                 pregap_lsn: None,
                 start_lsn: 0,
@@ -286,6 +339,10 @@ mod tests {
                 dropped_pregap_start: None,
                 merged_pregap_end: None,
                 previous_start_lsn_sig: None,
+                postgap_frames: None,
+                flag_dcp: false,
+                flag_4ch: false,
+                flag_scms: false,
             },
             CueTrack {
                 number: 2,
@@ -297,6 +354,9 @@ mod tests {
                 file_type: CueFileType::Binary,
                 title: None,
                 performer: None,
+                songwriter: None,
+                composer: None,
+                arranger: None,
                 isrc: None,
                 pregap_lsn: None,
                 start_lsn: 0,
@@ -304,6 +364,10 @@ mod tests {
                 dropped_pregap_start: None,
                 merged_pregap_end: None,
                 previous_start_lsn_sig: None,
+                postgap_frames: None,
+                flag_dcp: false,
+                flag_4ch: false,
+                flag_scms: false,
             },
         ];
 
@@ -333,6 +397,9 @@ mod tests {
             file_type: CueFileType::Wave,
             title: Some("Intro".into()),
             performer: None,
+            songwriter: None,
+            composer: None,
+            arranger: None,
             isrc: None,
             pregap_lsn: None,
             start_lsn: 0,
@@ -340,6 +407,10 @@ mod tests {
             dropped_pregap_start: None,
             merged_pregap_end: None,
             previous_start_lsn_sig: None,
+            postgap_frames: None,
+            flag_dcp: false,
+            flag_4ch: false,
+            flag_scms: false,
         }];
 
         let rendered = render_cue(&CueDoc {
@@ -367,6 +438,9 @@ mod tests {
             file_type: CueFileType::Wave,
             title: Some("T1".into()),
             performer: None,
+            songwriter: None,
+            composer: None,
+            arranger: None,
             isrc: None,
             pregap_lsn: None,
             start_lsn: 200,
@@ -374,6 +448,10 @@ mod tests {
             dropped_pregap_start: Some(50),
             merged_pregap_end: None,
             previous_start_lsn_sig: None,
+            postgap_frames: None,
+            flag_dcp: false,
+            flag_4ch: false,
+            flag_scms: false,
         }];
 
         let rendered = render_cue(&CueDoc {
@@ -386,5 +464,50 @@ mod tests {
         assert!(rendered.contains("    FLAGS PRE\n"));
         assert!(rendered.contains("    PREGAP 00:02:00\n"));
         assert!(rendered.contains("    INDEX 01 00:00:00\n"));
+    }
+
+    #[test]
+    fn emits_extended_track_directives() {
+        let mut meta = BTreeMap::new();
+        meta.insert("album".into(), "X".into());
+
+        let tracks = vec![CueTrack {
+            number: 1,
+            index: 1,
+            is_data: false,
+            preemphasis: true,
+            file_path: "t1.flac".into(),
+            cue_path: None,
+            file_type: CueFileType::Wave,
+            title: Some("T1".into()),
+            performer: Some("Artist".into()),
+            songwriter: Some("Writer".into()),
+            composer: Some("Composer".into()),
+            arranger: Some("Arranger".into()),
+            isrc: Some("USAAA9912345".into()),
+            pregap_lsn: None,
+            start_lsn: 0,
+            start_lsn_sig: 0,
+            dropped_pregap_start: None,
+            merged_pregap_end: None,
+            previous_start_lsn_sig: None,
+            postgap_frames: Some(150),
+            flag_dcp: true,
+            flag_4ch: true,
+            flag_scms: true,
+        }];
+
+        let rendered = render_cue(&CueDoc {
+            meta,
+            tracks,
+            deemphasis: false,
+            force_deemphasis: false,
+        });
+
+        assert!(rendered.contains("    SONGWRITER \"Writer\"\n"));
+        assert!(rendered.contains("    COMPOSER \"Composer\"\n"));
+        assert!(rendered.contains("    ARRANGER \"Arranger\"\n"));
+        assert!(rendered.contains("    FLAGS PRE DCP 4CH SCMS\n"));
+        assert!(rendered.contains("    POSTGAP 00:02:00\n"));
     }
 }

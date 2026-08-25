@@ -37,7 +37,7 @@ fn differential_cli_first_slice_against_c_binary() {
         c_bin.display()
     );
 
-    let cases: [(&str, &[&str], bool, &[&str]); 9] = [
+    let cases: [(&str, &[&str], bool, &[&str]); 11] = [
         (
             "help",
             &["--help"],
@@ -61,6 +61,18 @@ fn differential_cli_first_slice_against_c_binary() {
             &["-I", "-J"],
             false,
             &["-J (only generate a CUE sheet) cannot be used with -I"],
+        ),
+        (
+            "find_offset_info_conflict",
+            &["-f", "-I"],
+            false,
+            &["-f (find drive offset) cannot be used with -I"],
+        ),
+        (
+            "find_offset_cue_only_conflict",
+            &["-f", "-J"],
+            false,
+            &["-f (find drive offset) cannot be used with -J"],
         ),
         (
             "verify_log_valid",

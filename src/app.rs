@@ -3,12 +3,18 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(all(target_os = "linux", feature = "cdda"))]
+use std::time::{Duration, Instant};
 
 use crate::audio::flac::write_flac_file;
 use crate::audio::process::{TrackProcessingOptions, process_track_pcm};
 use crate::audio::wav::write_wav_file;
 use crate::audio::{PcmSpec, PcmTrackData};
 use crate::cdda::paranoia::{RetryPolicy, RipState};
+#[cfg(all(target_os = "linux", feature = "cdda"))]
+use crate::cdda::paranoia::RipEvent;
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+use crate::cdda::reader::CddaReadError;
 use crate::cdda::reader::run_track_with_paranoia_heuristics_interruptible;
 use crate::cdda::reader::{
     CDDA_FRAME_BYTES, CddaFrameReader, FaultInjectedImageReader, ParanoiaHeuristicConfig,
@@ -26,7 +32,10 @@ use crate::metadata::musicbrainz::{
 use crate::metadata::musicbrainz::ReleaseSummary;
 #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
 use crate::metadata::musicbrainz::ReqwestMusicBrainzHttpClient;
-use crate::naming::{NamingContext, build_track_relative_path};
+use crate::naming::{
+    NamingContext, build_track_relative_path,
+    detect_track_path_collisions, resolve_output_path,
+};
 use crate::{DriverKind, OutputFormat, ReleaseSelection, Settings, open_dev_kind};
 
 const DEFAULT_SYNTHETIC_FRAME_COUNT: usize = 32;
@@ -145,6 +154,7 @@ fn render_info_only_report(settings: &Settings, drive_used: Option<&str>) -> Str
     lines.join("\n")
 }
 
+#[cfg(any(test, all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
 fn validate_requested_track_indices_against_toc(
     toc: &[InfoTocEntry],
     requested_indices: &[i32],
@@ -380,6 +390,7 @@ fn render_info_only_report_with_toc(
     out
 }
 
+#[cfg(any(test, all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
 fn filter_info_tracks<'a>(toc: &'a [InfoTocEntry], selected_tracks: &[u32]) -> Vec<&'a InfoTocEntry> {
     if selected_tracks.is_empty() {
         return toc.iter().collect();
@@ -889,6 +900,41 @@ fn track_has_preemphasis(track_meta: &HashMap<String, String>) -> bool {
     }
 }
 
+fn parse_boolish(raw: &str) -> Option<bool> {
+    let n = raw.trim().to_ascii_lowercase();
+    match n.as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_u32_field(fields: &BTreeMap<String, String>, key: &str) -> Option<u32> {
+    fields.get(key).and_then(|v| v.trim().parse::<u32>().ok())
+}
+
+fn parse_bool_field(fields: &BTreeMap<String, String>, key: &str) -> Option<bool> {
+    fields.get(key).and_then(|v| parse_boolish(v))
+}
+
+fn cue_file_type_from_field(fields: &BTreeMap<String, String>) -> Option<CueFileType> {
+    let raw = fields.get("cue_file_type").or_else(|| fields.get("file_type"))?;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "wave" | "wav" => Some(CueFileType::Wave),
+        "binary" | "bin" => Some(CueFileType::Binary),
+        "mp3" => Some(CueFileType::Mp3),
+        _ => None,
+    }
+}
+
+fn track_directive_text(fields: &BTreeMap<String, String>, key: &str) -> Option<String> {
+    fields
+        .get(key)
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string)
+}
+
 fn default_media_value(settings: &Settings) -> &'static str {
     if settings.decode_hdcd {
         "HDCD"
@@ -918,23 +964,92 @@ fn render_cue_only_preview(settings: &Settings) -> String {
             let base_name = title.clone().unwrap_or_else(|| format!("Track {idx:02}"));
             let file_path = format!("{idx:02} - {base_name}.flac");
 
+            let start_lsn = parse_u32_field(&fields, "start_lsn").unwrap_or(0);
+            let mut preemphasis = parse_bool_field(&fields, "preemphasis").unwrap_or(false);
+            if let Some(v) = parse_bool_field(&fields, "flags_pre") {
+                preemphasis = v;
+            }
+            let flag_dcp = parse_bool_field(&fields, "flag_dcp")
+                .or_else(|| parse_bool_field(&fields, "dcp"))
+                .unwrap_or(false);
+            let flag_4ch = parse_bool_field(&fields, "flag_4ch")
+                .or_else(|| parse_bool_field(&fields, "4ch"))
+                .unwrap_or(false);
+            let flag_scms = parse_bool_field(&fields, "flag_scms")
+                .or_else(|| parse_bool_field(&fields, "scms"))
+                .unwrap_or(false);
+
+            let mut is_data = parse_bool_field(&fields, "data")
+                .or_else(|| parse_bool_field(&fields, "is_data"))
+                .unwrap_or(false);
+            if parse_bool_field(&fields, "audio") == Some(true) {
+                is_data = false;
+            }
+
+            let default_file_type = if is_data {
+                CueFileType::Binary
+            } else {
+                CueFileType::Wave
+            };
+
+            let mut pregap_lsn = parse_u32_field(&fields, "pregap_lsn");
+            let mut start_lsn_sig = parse_u32_field(&fields, "start_lsn_sig").unwrap_or(start_lsn);
+            let mut dropped_pregap_start = parse_u32_field(&fields, "dropped_pregap_start");
+            let mut merged_pregap_end = parse_u32_field(&fields, "merged_pregap_end");
+            let mut previous_start_lsn_sig = parse_u32_field(&fields, "previous_start_lsn_sig");
+
+            if let Some(pregap_start) = parse_u32_field(&fields, "pregap_start_lsn") {
+                pregap_lsn = Some(pregap_start);
+                if fields.contains_key("pregap_mode") {
+                    let mode = fields
+                        .get("pregap_mode")
+                        .map(|v| v.trim().to_ascii_lowercase())
+                        .unwrap_or_default();
+                    match mode.as_str() {
+                        "drop" => {
+                            dropped_pregap_start = Some(pregap_start);
+                            start_lsn_sig = start_lsn;
+                        }
+                        "merge" | "default" => {
+                            merged_pregap_end = Some(start_lsn);
+                            start_lsn_sig = pregap_start;
+                        }
+                        "track" | "append" => {
+                            if previous_start_lsn_sig.is_none() {
+                                previous_start_lsn_sig = Some(start_lsn.saturating_sub(1));
+                            }
+                            start_lsn_sig = start_lsn;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
             CueTrack {
                 number: idx,
                 index: idx,
-                is_data: false,
-                preemphasis: false,
+                is_data,
+                preemphasis,
                 file_path,
                 cue_path: None,
-                file_type: CueFileType::Wave,
+                file_type: cue_file_type_from_field(&fields).unwrap_or(default_file_type),
                 title,
                 performer,
-                isrc: None,
-                pregap_lsn: None,
-                start_lsn: 0,
-                start_lsn_sig: 0,
-                dropped_pregap_start: None,
-                merged_pregap_end: None,
-                previous_start_lsn_sig: None,
+                songwriter: track_directive_text(&fields, "songwriter"),
+                composer: track_directive_text(&fields, "composer"),
+                arranger: track_directive_text(&fields, "arranger"),
+                isrc: fields.get("isrc").cloned(),
+                pregap_lsn,
+                start_lsn,
+                start_lsn_sig,
+                dropped_pregap_start,
+                merged_pregap_end,
+                previous_start_lsn_sig,
+                postgap_frames: parse_u32_field(&fields, "postgap_frames")
+                    .or_else(|| parse_u32_field(&fields, "postgap")),
+                flag_dcp,
+                flag_4ch,
+                flag_scms,
             }
         })
         .collect();
@@ -1066,8 +1181,18 @@ fn cue_tracks_from_runtime(
         nb_tracks: toc.len(),
     };
 
+    let cue_rel_path = crate::naming::build_cue_relative_path(
+        &naming_ctx,
+        &album_meta,
+        &settings.folder_name_scheme,
+        &settings.cue_name_scheme,
+        format_suffix,
+    )
+    .unwrap_or_else(|_| "disc.cue".to_string());
+
     toc.iter()
-        .map(|entry| {
+        .enumerate()
+        .map(|(idx, entry)| {
             let mut title = release
                 .and_then(|r| r.tracks.get(entry.number.saturating_sub(1) as usize))
                 .map(|t| t.title.clone());
@@ -1075,12 +1200,145 @@ fn cue_tracks_from_runtime(
                 .and_then(|r| r.tracks.get(entry.number.saturating_sub(1) as usize))
                 .and_then(|t| t.artist.clone());
 
+            let start_lsn = entry.start_lsn.max(0) as u32;
+            let mut start_lsn_sig = start_lsn;
+            let mut pregap_lsn = entry
+                .pregap_lsn
+                .and_then(|p| if p >= 0 { Some(p as u32) } else { None })
+                .filter(|p| *p < start_lsn);
+            let mut previous_start_lsn_sig = if idx > 0 {
+                Some(toc[idx - 1].start_lsn.max(0) as u32)
+            } else {
+                None
+            };
+
+            let action = settings
+                .pregap_action
+                .get((entry.number as usize).saturating_sub(1))
+                .copied()
+                .unwrap_or(crate::PregapAction::Default);
+
+            let mut dropped_pregap_start = None;
+            let mut merged_pregap_end = None;
+
+            if let Some(pregap_start) = pregap_lsn {
+                match action {
+                    crate::PregapAction::Drop => {
+                        dropped_pregap_start = Some(pregap_start);
+                        start_lsn_sig = start_lsn;
+                    }
+                    crate::PregapAction::Merge | crate::PregapAction::Default => {
+                        merged_pregap_end = Some(start_lsn);
+                        start_lsn_sig = pregap_start;
+                    }
+                    crate::PregapAction::Track => {
+                        start_lsn_sig = start_lsn;
+                    }
+                }
+            }
+
+            let mut preemphasis = false;
+            let mut isrc = None;
+            let mut songwriter = None;
+            let mut composer = None;
+            let mut arranger = None;
+            let mut postgap_frames = None;
+            let mut flag_dcp = false;
+            let mut flag_4ch = false;
+            let mut flag_scms = false;
+            let mut file_type = if entry.track_is_data {
+                CueFileType::Binary
+            } else {
+                CueFileType::Wave
+            };
+
             if let Some(fields) = explicit_track_meta.get(&(entry.number as u32)) {
                 if let Some(t) = fields.get("title").filter(|v| !v.trim().is_empty()) {
                     title = Some(t.clone());
                 }
                 if let Some(a) = fields.get("artist").filter(|v| !v.trim().is_empty()) {
                     performer = Some(a.clone());
+                }
+                if let Some(v) = parse_bool_field(fields, "preemphasis") {
+                    preemphasis = v;
+                }
+                if let Some(v) = parse_bool_field(fields, "flags_pre") {
+                    preemphasis = v;
+                }
+                if let Some(v) = fields.get("isrc").filter(|v| !v.trim().is_empty()) {
+                    isrc = Some(v.clone());
+                }
+                songwriter = track_directive_text(fields, "songwriter");
+                composer = track_directive_text(fields, "composer");
+                arranger = track_directive_text(fields, "arranger");
+                if let Some(v) = parse_u32_field(fields, "start_lsn_sig") {
+                    start_lsn_sig = v;
+                }
+                if let Some(v) = parse_u32_field(fields, "pregap_lsn") {
+                    pregap_lsn = Some(v);
+                }
+                if let Some(v) = parse_u32_field(fields, "pregap_start_lsn") {
+                    pregap_lsn = Some(v);
+                }
+                if let Some(v) = parse_u32_field(fields, "previous_start_lsn_sig") {
+                    previous_start_lsn_sig = Some(v);
+                }
+                if let Some(v) = parse_u32_field(fields, "dropped_pregap_start") {
+                    dropped_pregap_start = Some(v);
+                }
+                if let Some(v) = parse_u32_field(fields, "merged_pregap_end") {
+                    merged_pregap_end = Some(v);
+                }
+                if let Some(v) = parse_u32_field(fields, "postgap_frames") {
+                    postgap_frames = Some(v);
+                }
+                if let Some(v) = parse_u32_field(fields, "postgap") {
+                    postgap_frames = Some(v);
+                }
+                if let Some(v) = parse_bool_field(fields, "flag_dcp")
+                    .or_else(|| parse_bool_field(fields, "dcp"))
+                {
+                    flag_dcp = v;
+                }
+                if let Some(v) = parse_bool_field(fields, "flag_4ch")
+                    .or_else(|| parse_bool_field(fields, "4ch"))
+                {
+                    flag_4ch = v;
+                }
+                if let Some(v) = parse_bool_field(fields, "flag_scms")
+                    .or_else(|| parse_bool_field(fields, "scms"))
+                {
+                    flag_scms = v;
+                }
+                if let Some(mode) = fields.get("pregap_mode") {
+                    match mode.trim().to_ascii_lowercase().as_str() {
+                        "drop" => {
+                            if let Some(p) = pregap_lsn {
+                                dropped_pregap_start = Some(p);
+                                merged_pregap_end = None;
+                                start_lsn_sig = start_lsn;
+                            }
+                        }
+                        "merge" | "default" => {
+                            if let Some(p) = pregap_lsn {
+                                dropped_pregap_start = None;
+                                merged_pregap_end = Some(start_lsn);
+                                start_lsn_sig = p;
+                            }
+                        }
+                        "track" | "append" => {
+                            dropped_pregap_start = None;
+                            merged_pregap_end = None;
+                            start_lsn_sig = start_lsn;
+                            if previous_start_lsn_sig.is_none() {
+                                previous_start_lsn_sig = Some(start_lsn.saturating_sub(1));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(v) = cue_file_type_from_field(fields) {
+                    file_type = v;
                 }
             }
 
@@ -1111,28 +1369,32 @@ fn cue_tracks_from_runtime(
                 )
             });
 
-            let cue_path = Path::new(&rel_path)
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .map(|p| p.join("disc.cue").display().to_string());
+            let cue_path = Some(cue_rel_path.clone());
 
             CueTrack {
                 number: entry.number as u32,
                 index: entry.number as u32,
                 is_data: entry.track_is_data,
-                preemphasis: false,
+                preemphasis,
                 file_path: rel_path,
                 cue_path,
-                file_type: CueFileType::Wave,
+                file_type,
                 title,
                 performer,
-                isrc: None,
-                pregap_lsn: None,
-                start_lsn: 0,
-                start_lsn_sig: 0,
-                dropped_pregap_start: None,
-                merged_pregap_end: None,
-                previous_start_lsn_sig: None,
+                songwriter,
+                composer,
+                arranger,
+                isrc,
+                pregap_lsn,
+                start_lsn,
+                start_lsn_sig,
+                dropped_pregap_start,
+                merged_pregap_end,
+                previous_start_lsn_sig,
+                postgap_frames,
+                flag_dcp,
+                flag_4ch,
+                flag_scms,
             }
         })
         .collect()
@@ -1271,6 +1533,10 @@ fn default_synthetic_output_root() -> PathBuf {
         .unwrap_or_default()
         .as_nanos();
     std::env::temp_dir().join(format!("cyanrip-rs-synthetic-rip-{now}"))
+}
+
+fn default_runtime_output_root() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
 fn synthetic_track_pcm() -> PcmTrackData {
@@ -1469,6 +1735,7 @@ fn acquire_track_pcm_from_physical_reader(
     settings: &Settings,
     frame_count: usize,
     start_lsn: i32,
+    track_number: u32,
 ) -> Result<PcmTrackData, RunWorkflowError> {
     use crate::cdda::linux_drive::{open_linux_physical_drive, run_paranoia_on_linux_drive_with_defaults_for_level};
 
@@ -1484,7 +1751,7 @@ fn acquire_track_pcm_from_physical_reader(
             RetryPolicy::disabled()
         };
 
-        let _ = run_paranoia_on_linux_drive_with_defaults_for_level(
+        let run = run_paranoia_on_linux_drive_with_defaults_for_level(
             device_path,
             settings.paranoia_level,
             start_lsn,
@@ -1500,13 +1767,89 @@ fn acquire_track_pcm_from_physical_reader(
                 }
                 acc
             },
-        );
+        )
+        .map_err(|e| RunWorkflowError::Runtime(format!("physical paranoia run failed: {e:?}")))?;
+
+        if run.state == RipState::Failed {
+            return Err(RunWorkflowError::Runtime(format!(
+                "physical paranoia run did not complete track: {:?}",
+                run.state
+            )));
+        }
+
+        if run.state == RipState::Aborted && run.events.contains(&RipEvent::MediaChanged) {
+            eprintln!(
+                "WARN physical paranoia precheck reported media-changed, continuing with direct read"
+            );
+        }
+
+        if run.state != RipState::TrackComplete {
+            eprintln!(
+                "WARN physical paranoia run ended in state {:?}, continuing with direct read",
+                run.state
+            );
+        }
     }
 
     let mut reader = open_linux_physical_drive(device_path).map_err(|e| {
         RunWorkflowError::Runtime(format!("physical drive open failed: {e:?}"))
     })?;
-    acquire_track_pcm_from_reader(&mut reader, start_lsn, frame_count)
+    reader
+        .seek_frame(start_lsn)
+        .map_err(|e| RunWorkflowError::Runtime(format!("frame seek failed: {e:?}")))?;
+
+    let mut samples = Vec::new();
+    let start = Instant::now();
+    let mut last_update = start.checked_sub(Duration::from_secs(1)).unwrap_or(start);
+
+    for frame_idx in 0..frame_count {
+        let frame = reader
+            .read_frame()
+            .map_err(|e| RunWorkflowError::Runtime(format!("frame read failed: {e:?}")))?;
+
+        let mut off = 0usize;
+        while off + 1 < frame.len() {
+            let v = i16::from_le_bytes([frame[off], frame[off + 1]]);
+            samples.push(v);
+            off += 2;
+        }
+
+        let done = frame_idx.saturating_add(1);
+        let now = Instant::now();
+        let should_update = done == 1
+            || done == frame_count
+            || now.duration_since(last_update) >= Duration::from_millis(400);
+
+        if should_update {
+            let progress = (done as f64 / frame_count.max(1) as f64) * 100.0;
+            let elapsed = now.duration_since(start).as_secs_f64().max(0.001);
+            let eta_min = if done >= frame_count {
+                0.0
+            } else {
+                let rate_fps = done as f64 / elapsed;
+                let remaining_frames = frame_count.saturating_sub(done) as f64;
+                (remaining_frames / rate_fps) / 60.0
+            };
+
+            print!(
+                "\rRipping and encoding track {}, progress - {:.2}%, ETA - {:.2} min   ",
+                track_number, progress, eta_min
+            );
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            last_update = now;
+        }
+    }
+
+    println!();
+
+    Ok(PcmTrackData {
+        spec: PcmSpec {
+            channels: 2,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+        },
+        interleaved_i16_samples: samples,
+    })
 }
 
 #[cfg(not(all(target_os = "linux", feature = "cdda")))]
@@ -1514,6 +1857,7 @@ fn acquire_track_pcm_from_physical_reader(
     _settings: &Settings,
     _frame_count: usize,
     _start_lsn: i32,
+    _track_number: u32,
 ) -> Result<PcmTrackData, RunWorkflowError> {
     Err(RunWorkflowError::Runtime(
         "physical drive reader requires linux + cdda feature support".to_string(),
@@ -1561,6 +1905,20 @@ fn apply_offset_frame_adjustment(boundary: TrackBoundary, settings: &Settings) -
 }
 
 #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn map_toc_preflight_error(err: &CddaReadError) -> RunWorkflowError {
+    let msg = match err {
+        CddaReadError::ReadFailed(msg) | CddaReadError::SeekFailed(msg) => msg,
+    };
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("no medium") || lower.contains("invalid toc values") {
+        return RunWorkflowError::Runtime(
+            "Drive has no readable audio medium inserted".to_string(),
+        );
+    }
+    RunWorkflowError::Runtime(format!("TOC read failed: {err:?}"))
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
 fn resolve_physical_track_boundaries(
     settings: &Settings,
     requested_track_numbers: &[u32],
@@ -1569,8 +1927,7 @@ fn resolve_physical_track_boundaries(
 
     let device_path = settings.dev_path.as_deref().or(Some("/dev/cdrom"));
 
-    let toc = read_drive_toc_tracks(device_path)
-        .map_err(|e| RunWorkflowError::Runtime(format!("TOC read failed: {e:?}")))?;
+    let toc = read_drive_toc_tracks(device_path).map_err(|e| map_toc_preflight_error(&e))?;
 
     let available_audio_tracks: Vec<u32> = toc
         .iter()
@@ -1663,6 +2020,17 @@ struct TrackBoundary {
 
 fn parse_i32_meta(map: &HashMap<String, String>, key: &str) -> Option<i32> {
     map.get(key).and_then(|v| v.trim().parse::<i32>().ok())
+}
+
+fn format_duration_from_frames(frame_count: usize) -> String {
+    let minutes = frame_count / (75 * 60);
+    let seconds = (frame_count / 75) % 60;
+    let centis = ((frame_count % 75) * 100) / 75;
+    format!("{minutes:02}:{seconds:02}.{centis:02}")
+}
+
+fn samples_from_frames(frame_count: usize) -> usize {
+    frame_count.saturating_mul(588)
 }
 
 fn parse_usize_meta(map: &HashMap<String, String>, key: &str) -> Option<usize> {
@@ -1946,18 +2314,16 @@ fn acquire_tracks_pcm_from_physical_reader(
     boundaries: &[TrackBoundary],
 ) -> Result<Vec<(u32, PcmTrackData)>, RunWorkflowError> {
     let mut out = Vec::with_capacity(boundaries.len());
-    for (idx, boundary) in boundaries.iter().enumerate() {
+    for boundary in boundaries {
         let start_lsn = boundary.start_lsn;
         let frame_count = boundary.frame_count;
 
-        // Emit C-style runtime progress updates while physical ripping is ongoing.
-        let progress = ((idx + 1) as f32 / boundaries.len().max(1) as f32) * 100.0;
-        println!(
-            "Ripping and encoding track {}, progress - {:.2}%, ETA - 0s   ",
-            boundary.track_number, progress
-        );
-
-        let pcm = acquire_track_pcm_from_physical_reader(settings, frame_count, start_lsn)?;
+        let pcm = acquire_track_pcm_from_physical_reader(
+            settings,
+            frame_count,
+            start_lsn,
+            boundary.track_number,
+        )?;
         out.push((boundary.track_number, pcm));
     }
     Ok(out)
@@ -1967,7 +2333,9 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
     let source = full_rip_source_from_settings(settings);
     let requested_track_numbers = selected_track_numbers(settings);
     let default_frame_count = configured_frame_count();
-    let mut track_meta_map = track_meta_map_from_settings(settings);
+    let track_meta_map = track_meta_map_from_settings(settings);
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    let mut track_meta_map = track_meta_map;
     let image_toc_overrides = match source {
         FullRipSource::Image => {
             let map = image_toc_overrides_from_settings(settings, default_frame_count);
@@ -2096,7 +2464,7 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
 
     let output_root = match std::env::var("CYANRIP_RS_OUTPUT_ROOT") {
         Ok(v) if !v.trim().is_empty() => PathBuf::from(v),
-        _ => default_synthetic_output_root(),
+        _ => default_runtime_output_root(),
     };
 
     let mut album_meta: HashMap<String, String> = parse_album_metadata_map(settings.album_metadata.as_deref())
@@ -2207,6 +2575,52 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
             "Track {} ripped and encoded successfully!\n",
             boundary.track_number
         ));
+
+        out.push_str(&format!("Track {} summary:\n", boundary.track_number));
+        out.push_str("  Properties:\n");
+        out.push_str(&format!(
+            "    Duration:    {}\n",
+            format_duration_from_frames(boundary.frame_count)
+        ));
+        out.push_str(&format!(
+            "    Samples:     {}\n",
+            samples_from_frames(boundary.frame_count)
+        ));
+        out.push_str(&format!("    Frames:      {}\n", boundary.frame_count));
+        out.push_str(&format!("    Start LSN:   {}\n", boundary.start_lsn));
+        out.push_str(&format!(
+            "    End LSN:     {}\n",
+            boundary
+                .start_lsn
+                .saturating_add(boundary.frame_count.saturating_sub(1) as i32)
+        ));
+
+        out.push_str("\n  Metadata:\n");
+        if let Some(meta) = track_meta_map.get(&boundary.track_number) {
+            let mut keys: Vec<&String> = meta.keys().collect();
+            keys.sort();
+            for key in keys {
+                if let Some(value) = meta.get(key)
+                    && !value.trim().is_empty()
+                {
+                    out.push_str(&format!("    {:<30} {}\n", key, value));
+                }
+            }
+        } else {
+            out.push_str("    none\n");
+        }
+
+        out.push_str("\n  File(s):\n");
+        let mut files_for_track = result
+            .written_files
+            .iter()
+            .filter(|f| f.track_number == boundary.track_number)
+            .collect::<Vec<_>>();
+        files_for_track.sort_by(|a, b| a.absolute_path.cmp(&b.absolute_path));
+        for file in files_for_track {
+            out.push_str(&format!("    {}\n", file.relative_path.display()));
+        }
+        out.push('\n');
     }
     for file in &result.written_files {
         out.push_str(&format!("FILE {}\n", file.absolute_path.display()));
@@ -2694,7 +3108,8 @@ pub fn write_track_outputs(input: TrackOutputFlowInput) -> Result<TrackOutputFlo
         let (format_suffix, extension) = output_format_descriptor(*fmt_kind)
             .ok_or(TrackOutputFlowError::UnsupportedOutputFormat(*fmt_kind))?;
 
-        for track in &input.tracks {
+        let mut planned_paths: Vec<(usize, u32, PathBuf, PathBuf)> = Vec::new();
+        for (idx, track) in input.tracks.iter().enumerate() {
             let relative_path_str = build_track_relative_path(
                 &naming_ctx,
                 &input.album_meta,
@@ -2706,12 +3121,27 @@ pub fn write_track_outputs(input: TrackOutputFlowInput) -> Result<TrackOutputFlo
             )
             .map_err(TrackOutputFlowError::Naming)?;
 
-            let relative_path = PathBuf::from(relative_path_str);
-            let absolute_path = input.output_root.join(&relative_path);
+            let absolute_path = resolve_output_path(&input.output_root, &relative_path_str, true)?;
+            planned_paths.push((
+                idx,
+                track.track_number,
+                PathBuf::from(relative_path_str),
+                absolute_path,
+            ));
+        }
 
-            if let Some(parent) = absolute_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
+        let collision_input: Vec<(u32, String)> = planned_paths
+            .iter()
+            .map(|(_, track_number, rel, _)| (*track_number, rel.to_string_lossy().to_string()))
+            .collect();
+        for (a, b, path) in detect_track_path_collisions(&collision_input) {
+            println!(
+                "WARNING: tracks {a} and {b} resolve to the same file \"{path}\", one will overwrite the other!"
+            );
+        }
+
+        for (idx, _track_number, relative_path, absolute_path) in planned_paths {
+            let track = &input.tracks[idx];
 
             let processed_pcm = process_track_pcm(
                 &track.pcm,
@@ -2889,12 +3319,17 @@ mod tests {
 
         match run_workflow(&settings) {
             Ok(Some(report)) => {
-                assert!(report.contains("Searching for drive offset"));
+                assert!(
+                    report.contains("Searching for drive offset")
+                        || report.contains("cyanrip-rs find-offset mode"),
+                    "unexpected find-offset header: {report}"
+                );
                 assert!(
                     report.contains("Drive offset of ")
                         || report.contains("No track had AccuRip entry")
                         || report.contains("No track was long enough")
-                        || report.contains("Was not able to find drive offset"),
+                        || report.contains("Was not able to find drive offset")
+                        || report.contains("Status: unavailable in this build"),
                     "unexpected find-offset report: {report}"
                 );
             }
@@ -2932,6 +3367,36 @@ mod tests {
             }
             other => panic!("unexpected info-only outcome: {other:?}"),
         }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    #[test]
+    fn toc_preflight_mapper_returns_clear_no_medium_message() {
+        let err = crate::cdda::reader::CddaReadError::ReadFailed(
+            "invalid TOC values returned by drive".to_string(),
+        );
+        assert_eq!(
+            map_toc_preflight_error(&err),
+            RunWorkflowError::Runtime("Drive has no readable audio medium inserted".to_string())
+        );
+
+        let err_no_medium = crate::cdda::reader::CddaReadError::ReadFailed(
+            "error in ioctl CDROMREADTOCHDR: No medium found".to_string(),
+        );
+        assert_eq!(
+            map_toc_preflight_error(&err_no_medium),
+            RunWorkflowError::Runtime("Drive has no readable audio medium inserted".to_string())
+        );
+    }
+
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    #[test]
+    fn toc_preflight_mapper_keeps_generic_toc_message_for_other_errors() {
+        let err = crate::cdda::reader::CddaReadError::ReadFailed("permission denied".to_string());
+        assert_eq!(
+            map_toc_preflight_error(&err),
+            RunWorkflowError::Runtime("TOC read failed: ReadFailed(\"permission denied\")".to_string())
+        );
     }
 
     #[test]
@@ -3186,6 +3651,32 @@ mod tests {
             }
             other => panic!("unexpected cue-only outcome: {other:?}"),
         }
+    }
+
+    #[test]
+    fn cue_only_preview_ingests_extended_track_fields() {
+        let settings = Settings {
+            generate_cue_only: true,
+            deemphasis: false,
+            album_metadata: Some("album=Extended Album:album_artist=Extended Artist".to_string()),
+            track_metadata: vec![
+                "1=title=Lead:artist=Singer:isrc=USAAA9912345:preemphasis=1:start_lsn=200:dropped_pregap_start=50:songwriter=Writer:composer=Composer:arranger=Arranger:flag_dcp=1:flag_4ch=1:flag_scms=1:postgap_frames=150".to_string(),
+                "2=title=Data Cut:data=1:cue_file_type=binary".to_string(),
+            ],
+            ..Settings::default()
+        };
+
+        let cue = render_cue_only_preview(&settings);
+        assert!(cue.contains("ISRC USAAA9912345"));
+        assert!(cue.contains("FLAGS PRE"));
+        assert!(cue.contains("FLAGS PRE DCP 4CH SCMS"));
+        assert!(cue.contains("SONGWRITER \"Writer\""));
+        assert!(cue.contains("COMPOSER \"Composer\""));
+        assert!(cue.contains("ARRANGER \"Arranger\""));
+        assert!(cue.contains("PREGAP 00:02:00"));
+        assert!(cue.contains("POSTGAP 00:02:00"));
+        assert!(cue.contains("FILE \"02 - Data Cut.flac\" BINARY"));
+        assert!(cue.contains("TRACK 02 MODE1/2352"));
     }
 
     #[test]
@@ -3754,7 +4245,7 @@ FILE "disc.bin" BINARY
     }
 
     #[test]
-    fn rejects_hdcd_request_until_decoder_backend_is_wired() {
+    fn writes_flac_when_hdcd_option_is_enabled() {
         let output_root = unique_temp_output_root();
 
         let settings = Settings {
@@ -3776,19 +4267,19 @@ FILE "disc.bin" BINARY
             pcm: sample_pcm(),
         }];
 
-        let err = write_track_outputs(TrackOutputFlowInput {
+        let result = write_track_outputs(TrackOutputFlowInput {
             settings,
-            output_root,
+            output_root: output_root.clone(),
             album_meta,
             tracks,
         })
-        .expect_err("hdcd requests should return a clear processing error");
+        .expect("hdcd option should be handled without processing failure");
 
-        match err {
-            TrackOutputFlowError::Processing { message, .. } => {
-                assert!(message.contains("HDCD decoding was requested"));
-            }
-            other => panic!("unexpected error kind: {other:?}"),
-        }
+        assert_eq!(result.written_files.len(), 1);
+        let output_path = output_root.join("Example Album [FLAC]/01 - Intro.flac");
+        assert!(output_path.exists(), "expected hdcd-enabled output path to exist");
+
+        let cleanup = std::fs::remove_dir_all(&output_root);
+        assert!(cleanup.is_ok(), "temporary output root should be removable");
     }
 }

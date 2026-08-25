@@ -34,6 +34,30 @@ fn run_capture_with_env(binary: &PathBuf, args: &[&str], envs: &[(&str, &str)]) 
     (status, merged)
 }
 
+fn run_capture_in_dir_with_env(
+    binary: &PathBuf,
+    working_dir: &PathBuf,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> (i32, String) {
+    let mut cmd = Command::new(binary);
+    cmd.current_dir(working_dir);
+    cmd.args(args);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run {}: {e}", binary.display()));
+
+    let status = out.status.code().unwrap_or(-1);
+    let mut merged = String::new();
+    merged.push_str(&String::from_utf8_lossy(&out.stdout));
+    merged.push_str(&String::from_utf8_lossy(&out.stderr));
+    (status, merged)
+}
+
 fn unique_temp_output_root() -> PathBuf {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -55,10 +79,13 @@ fn run_mode_defaults_to_image_reader_full_rip_bridge() {
     let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
     let output_root = unique_temp_output_root();
     let output_root_s = output_root.to_string_lossy().to_string();
+    let cue_path = unique_temp_cue_path();
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
 
     let (code, out) = run_capture_with_env(
         &rust_bin,
-        &["-o", "flac"],
+        &["-o", "flac", "-d", &cue_path_s],
         &[("CYANRIP_RS_OUTPUT_ROOT", &output_root_s)],
     );
 
@@ -74,8 +101,49 @@ fn run_mode_defaults_to_image_reader_full_rip_bridge() {
         assert!(PathBuf::from(path).exists(), "expected output file to exist: {path}");
     }
 
+    let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
     assert!(cleanup.is_ok(), "full-rip bridge output root should be removable");
+}
+
+#[test]
+fn run_mode_defaults_output_root_to_current_working_directory() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let working_root = unique_temp_output_root();
+    fs::create_dir_all(&working_root).expect("working root should be creatable");
+
+    let cue_path = working_root.join("disc.cue");
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
+
+    let (code, out) = run_capture_in_dir_with_env(
+        &rust_bin,
+        &working_root,
+        &["-o", "flac", "-d", &cue_path_s, "-s", "103"],
+        &[],
+    );
+
+    assert_eq!(code, 0, "full-rip run should succeed: {out}");
+    assert!(
+        out.contains(&format!("Output root: {}", working_root.display())),
+        "expected output root to default to current dir; output: {out}"
+    );
+
+    let file_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("FILE ")).collect();
+    assert!(!file_lines.is_empty(), "expected at least one written file, output: {out}");
+    for line in file_lines {
+        let path = PathBuf::from(line.trim_start_matches("FILE ").trim());
+        assert!(
+            path.starts_with(&working_root),
+            "expected file path in current working directory root: {}",
+            path.display()
+        );
+        assert!(path.exists(), "expected output file to exist: {}", path.display());
+    }
+
+    let _ = fs::remove_file(&cue_path);
+    let cleanup = fs::remove_dir_all(&working_root);
+    assert!(cleanup.is_ok(), "cwd output root should be removable after run");
 }
 
 #[test]
@@ -83,10 +151,24 @@ fn run_mode_full_rip_bridge_writes_selected_tracks() {
     let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
     let output_root = unique_temp_output_root();
     let output_root_s = output_root.to_string_lossy().to_string();
+    let cue_path = unique_temp_cue_path();
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
 
     let (code, out) = run_capture_with_env(
         &rust_bin,
-        &["-o", "wav,flac", "-l", "1,3", "-t", "1=title=One", "-t", "3=title=Three"],
+        &[
+            "-o",
+            "wav,flac",
+            "-d",
+            &cue_path_s,
+            "-l",
+            "1,3",
+            "-t",
+            "1=title=One",
+            "-t",
+            "3=title=Three",
+        ],
         &[("CYANRIP_RS_OUTPUT_ROOT", &output_root_s)],
     );
 
@@ -104,8 +186,47 @@ fn run_mode_full_rip_bridge_writes_selected_tracks() {
         assert!(PathBuf::from(path).exists(), "expected output file to exist: {path}");
     }
 
+    let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
     assert!(cleanup.is_ok(), "multi-track full-rip bridge output root should be removable");
+}
+
+#[test]
+fn run_mode_full_rip_bridge_emits_per_track_summary_blocks() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let output_root = unique_temp_output_root();
+    let output_root_s = output_root.to_string_lossy().to_string();
+    let cue_path = unique_temp_cue_path();
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
+
+    let (code, out) = run_capture_with_env(
+        &rust_bin,
+        &[
+            "-o",
+            "wav",
+            "-d",
+            &cue_path_s,
+            "-l",
+            "1,2",
+            "-t",
+            "1=title=One:artist=A",
+            "-t",
+            "2=title=Two:artist=B",
+        ],
+        &[("CYANRIP_RS_OUTPUT_ROOT", &output_root_s)],
+    );
+
+    assert_eq!(code, 0, "full-rip run should succeed: {out}");
+    assert!(out.contains("Track 1 summary:"), "missing summary for track 1: {out}");
+    assert!(out.contains("Track 2 summary:"), "missing summary for track 2: {out}");
+    assert!(out.contains("  Properties:"), "missing properties block: {out}");
+    assert!(out.contains("  Metadata:"), "missing metadata block: {out}");
+    assert!(out.contains("  File(s):"), "missing file list block: {out}");
+
+    let _ = fs::remove_file(&cue_path);
+    let cleanup = fs::remove_dir_all(&output_root);
+    assert!(cleanup.is_ok(), "summary test output root should be removable");
 }
 
 #[test]
@@ -113,12 +234,17 @@ fn run_mode_full_rip_bridge_honors_track_boundary_metadata() {
     let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
     let output_root = unique_temp_output_root();
     let output_root_s = output_root.to_string_lossy().to_string();
+    let cue_path = unique_temp_cue_path();
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
 
     let (code, out) = run_capture_with_env(
         &rust_bin,
         &[
             "-o",
             "wav",
+            "-d",
+            &cue_path_s,
             "-l",
             "2,4",
             "-t",
@@ -141,6 +267,7 @@ fn run_mode_full_rip_bridge_honors_track_boundary_metadata() {
         assert!(PathBuf::from(path).exists(), "expected output file to exist: {path}");
     }
 
+    let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
     assert!(cleanup.is_ok(), "boundary-metadata full-rip bridge output root should be removable");
 }
@@ -150,12 +277,17 @@ fn run_mode_full_rip_bridge_honors_image_toc_env_overrides() {
     let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
     let output_root = unique_temp_output_root();
     let output_root_s = output_root.to_string_lossy().to_string();
+    let cue_path = unique_temp_cue_path();
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
 
     let (code, out) = run_capture_with_env(
         &rust_bin,
         &[
             "-o",
             "wav",
+            "-d",
+            &cue_path_s,
             "-l",
             "2,4",
             "-t",
@@ -181,6 +313,7 @@ fn run_mode_full_rip_bridge_honors_image_toc_env_overrides() {
         assert!(PathBuf::from(path).exists(), "expected output file to exist: {path}");
     }
 
+    let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
     assert!(cleanup.is_ok(), "image-toc full-rip bridge output root should be removable");
 }
@@ -261,6 +394,43 @@ fn run_mode_full_rip_bridge_applies_offset_frame_expansion() {
 }
 
 #[test]
+fn run_mode_full_rip_bridge_with_explicit_paranoia_retries_writes_output() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let output_root = unique_temp_output_root();
+    let output_root_s = output_root.to_string_lossy().to_string();
+    let cue_path = unique_temp_cue_path();
+
+    fs::write(
+        &cue_path,
+        "FILE \"disc.bin\" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n",
+    )
+    .expect("cue fixture should be writable");
+
+    let cue_path_s = cue_path.to_string_lossy().to_string();
+    let (code, out) = run_capture_with_env(
+        &rust_bin,
+        &["-o", "wav", "-d", &cue_path_s, "-P", "2", "-Z", "1", "-r", "3"],
+        &[("CYANRIP_RS_OUTPUT_ROOT", &output_root_s)],
+    );
+
+    assert_eq!(code, 0);
+    assert!(out.contains("cyanrip-rs full-rip bridge mode"));
+    assert!(out.contains("Source: image"));
+    assert!(out.contains("Written files: 1"));
+
+    let file_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("FILE ")).collect();
+    assert_eq!(file_lines.len(), 1, "expected one written file, output: {out}");
+    for line in file_lines {
+        let path = line.trim_start_matches("FILE ").trim();
+        assert!(PathBuf::from(path).exists(), "expected output file to exist: {path}");
+    }
+
+    let _ = fs::remove_file(&cue_path);
+    let cleanup = fs::remove_dir_all(&output_root);
+    assert!(cleanup.is_ok(), "paranoia full-rip bridge output root should be removable");
+}
+
+#[test]
 fn run_mode_rejects_unimplemented_codec_early() {
     let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
 
@@ -279,6 +449,32 @@ fn info_only_mode_returns_success_with_report() {
         assert!(out.contains("Paranoia level: "));
         assert!(out.contains("Outputs:        "));
         assert!(out.contains("AccurateRip:    "));
+    } else {
+        assert_eq!(code, 1, "unexpected exit code for info-only mode: {code}, output: {out}");
+        assert!(
+            out.contains("TOC read failed") || out.contains("musicbrainz lookup failed"),
+            "unexpected info-only error output: {out}"
+        );
+    }
+}
+
+#[test]
+fn info_only_mode_keeps_accurip_enabled_unless_a_is_set() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+
+    let (code, out) = run_capture(&rust_bin, &["-I", "-o", "flac"]);
+    if code == 0 {
+        assert!(
+            out.contains("AccurateRip:    enabled"),
+            "expected info-only mode to keep AccurateRip enabled by default; output: {out}"
+        );
+
+        let (code_a, out_a) = run_capture(&rust_bin, &["-I", "-A", "-o", "flac"]);
+        assert_eq!(code_a, 0);
+        assert!(
+            out_a.contains("AccurateRip:    disabled"),
+            "expected -I -A to disable AccurateRip; output: {out_a}"
+        );
     } else {
         assert_eq!(code, 1, "unexpected exit code for info-only mode: {code}, output: {out}");
         assert!(
@@ -349,12 +545,17 @@ fn find_offset_mode_returns_success_with_report() {
 
     let (code, out) = run_capture(&rust_bin, &["-f", "-o", "flac"]);
     if code == 0 {
-        assert!(out.contains("Searching for drive offset"));
+        assert!(
+            out.contains("Searching for drive offset")
+                || out.contains("cyanrip-rs find-offset mode"),
+            "unexpected find-offset terminal header: {out}"
+        );
         assert!(
             out.contains("Drive offset of ")
                 || out.contains("No track had AccuRip entry")
                 || out.contains("No track was long enough")
-                || out.contains("Was not able to find drive offset"),
+                || out.contains("Was not able to find drive offset")
+                || out.contains("Status: unavailable in this build"),
             "unexpected find-offset terminal output: {out}"
         );
     } else {
@@ -375,10 +576,14 @@ fn find_offset_mode_prints_c_style_preflight_lines() {
 
     let (code, out) = run_capture(&rust_bin, &["-f", "-o", "flac"]);
     if code == 0 {
-        assert!(out.contains("Searching for drive offset"));
-        assert!(out.contains("Checking "));
-        assert!(out.contains(" for cdrom..."));
-        assert!(out.contains("Opening drive..."));
+        if out.contains("Status: unavailable in this build") {
+            assert!(out.contains("cyanrip-rs find-offset mode"));
+        } else {
+            assert!(out.contains("Searching for drive offset"));
+            assert!(out.contains("Checking "));
+            assert!(out.contains(" for cdrom..."));
+            assert!(out.contains("Opening drive..."));
+        }
     } else {
         assert_eq!(code, 1, "unexpected exit code for find-offset mode: {code}, output: {out}");
         assert!(
@@ -399,17 +604,14 @@ fn find_offset_mode_prints_c_style_preflight_lines() {
 }
 
 #[test]
-fn find_offset_mode_bypasses_cue_only_offset_unset_guard() {
+fn find_offset_mode_rejects_cue_only_combination() {
     let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
 
-    let (_code, out) = run_capture(&rust_bin, &["-f", "-J", "-o", "flac"]);
+    let (code, out) = run_capture(&rust_bin, &["-f", "-J", "-o", "flac"]);
+    assert_eq!(code, 2, "unexpected exit code for -f -J parse conflict: {code}, output: {out}");
     assert!(
-        !out.contains("Offset is unset! To continue with an offset of 0, run with -s 0!"),
-        "-f should bypass cue-only offset guard, output: {out}"
-    );
-    assert!(
-        out.contains("Searching for drive offset"),
-        "-f should keep find-offset execution path, output: {out}"
+        out.contains("-f (find drive offset) cannot be used with -J (only generate a CUE sheet)!"),
+        "missing parse conflict message for -f -J combination, output: {out}"
     );
 }
 

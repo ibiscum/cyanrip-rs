@@ -441,7 +441,11 @@ impl CliArgs {
         }
 
         validate_folder_scheme(settings.outputs.len(), &settings.folder_name_scheme)?;
-        validate_mode_combo(settings.print_info_only, self.cue_only)?;
+        validate_mode_combo(
+            settings.print_info_only,
+            self.cue_only,
+            settings.find_drive_offset,
+        )?;
 
         if settings.generate_cue_only {
             settings.disable_accurip = true;
@@ -622,6 +626,24 @@ mod tests {
         assert_eq!(
             err,
             "-J (only generate a CUE sheet) cannot be used with -I (only print info)!"
+        );
+    }
+
+    #[test]
+    fn rejects_find_offset_with_info_mode() {
+        let err = parse_from_iter(["cyanrip-rs", "-f", "-I"]).unwrap_err();
+        assert_eq!(
+            err,
+            "-f (find drive offset) cannot be used with -I (only print info)!"
+        );
+    }
+
+    #[test]
+    fn rejects_find_offset_with_cue_only_mode() {
+        let err = parse_from_iter(["cyanrip-rs", "-f", "-J"]).unwrap_err();
+        assert_eq!(
+            err,
+            "-f (find drive offset) cannot be used with -J (only generate a CUE sheet)!"
         );
     }
 

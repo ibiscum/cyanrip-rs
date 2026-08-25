@@ -411,10 +411,25 @@ pub fn validate_folder_scheme(outputs_num: usize, folder_name_scheme: &str) -> R
     Ok(())
 }
 
-pub fn validate_mode_combo(print_info_only: bool, generate_cue_only: bool) -> Result<(), String> {
+pub fn validate_mode_combo(
+    print_info_only: bool,
+    generate_cue_only: bool,
+    find_drive_offset: bool,
+) -> Result<(), String> {
     if print_info_only && generate_cue_only {
         return Err("-J (only generate a CUE sheet) cannot be used with -I (only print info)!"
             .to_string());
+    }
+    if find_drive_offset && print_info_only {
+        return Err(
+            "-f (find drive offset) cannot be used with -I (only print info)!".to_string(),
+        );
+    }
+    if find_drive_offset && generate_cue_only {
+        return Err(
+            "-f (find drive offset) cannot be used with -J (only generate a CUE sheet)!"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -548,9 +563,11 @@ mod tests {
 
     #[test]
     fn mode_combo_validation_regression() {
-        assert!(validate_mode_combo(false, false).is_ok());
-        assert!(validate_mode_combo(true, false).is_ok());
-        assert!(validate_mode_combo(false, true).is_ok());
-        assert!(validate_mode_combo(true, true).is_err());
+        assert!(validate_mode_combo(false, false, false).is_ok());
+        assert!(validate_mode_combo(true, false, false).is_ok());
+        assert!(validate_mode_combo(false, true, false).is_ok());
+        assert!(validate_mode_combo(true, true, false).is_err());
+        assert!(validate_mode_combo(true, false, true).is_err());
+        assert!(validate_mode_combo(false, true, true).is_err());
     }
 }
