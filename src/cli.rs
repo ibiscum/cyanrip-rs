@@ -159,6 +159,14 @@ pub struct CliArgs {
     pub bitrate: f32,
 
     #[arg(
+        short = 'B',
+        long = "outputroot",
+        help_heading = "Output options",
+        help = "Base output directory for ripped files (overrides CYANRIP_RS_OUTPUT_ROOT)"
+    )]
+    pub outputroot: Option<String>,
+
+    #[arg(
         short = 'D',
         long = "folder-scheme",
         visible_alias = "folder_scheme",
@@ -374,6 +382,7 @@ impl CliArgs {
         settings.ripping_retries = self.repeat_rips;
         settings.speed = self.speed;
         settings.bitrate_kbps = self.bitrate;
+        settings.output_root = self.outputroot.clone();
         settings.overread_leadinout = self.overread;
         settings.decode_hdcd = self.hdcd;
         settings.force_deemphasis = self.force_deemphasis;
@@ -593,6 +602,15 @@ mod tests {
         assert_eq!(cfg.settings.rip_indices_count, 3);
         assert_eq!(cfg.settings.pregap_action[0], PregapAction::Drop);
         assert_eq!(cfg.settings.pregap_action[2], PregapAction::Merge);
+    }
+
+    #[test]
+    fn maps_outputroot_to_settings() {
+        let cfg = parse_from_iter(["cyanrip-rs", "-B", "/tmp/cyanrip-out"]).unwrap();
+        assert_eq!(
+            cfg.settings.output_root.as_deref(),
+            Some("/tmp/cyanrip-out")
+        );
     }
 
     #[test]
@@ -846,8 +864,8 @@ mod tests {
 
         let expected: BTreeSet<char> = [
             'd', 's', 'r', 'Z', 'S', 'p', 'P', 'O', 'H', 'E', 'W', 'K', 'o', 'b', 'D', 'F',
-            'L', 'M', 'l', 'T', 'I', 'J', 'a', 't', 'R', 'c', 'C', 'N', 'A', 'U', 'm', 'G',
-            'Q', 'f', 'Y',
+            'B', 'L', 'M', 'l', 'T', 'I', 'J', 'a', 't', 'R', 'c', 'C', 'N', 'A', 'U', 'm',
+            'G', 'Q', 'f', 'Y',
         ]
         .into_iter()
         .collect();
@@ -870,5 +888,8 @@ mod tests {
         assert!(help.contains("Track pregap handling: N=default|drop|merge|track (repeatable)"));
         assert!(help.contains("Only generate and print a CUE sheet, don't rip"));
         assert!(help.contains("Verify a rip log's FUN512 checksum"));
+        assert!(help.contains(
+            "Base output directory for ripped files (overrides CYANRIP_RS_OUTPUT_ROOT)"
+        ));
     }
 }

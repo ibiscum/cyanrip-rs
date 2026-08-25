@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 #[cfg(all(target_os = "linux", feature = "cdda"))]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::audio::flac::write_flac_file;
 use crate::audio::process::{TrackProcessingOptions, process_track_pcm};
@@ -1527,16 +1527,65 @@ fn env_var_truthy(name: &str) -> bool {
     }
 }
 
-fn default_synthetic_output_root() -> PathBuf {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    std::env::temp_dir().join(format!("cyanrip-rs-synthetic-rip-{now}"))
-}
-
 fn default_runtime_output_root() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+#[cfg(target_os = "linux")]
+fn read_proc_status_value_kib(key: &str) -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if !line.starts_with(key) {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let _label = parts.next()?;
+        let value = parts.next()?.parse::<u64>().ok()?;
+        return Some(value);
+    }
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_proc_status_value_kib(_key: &str) -> Option<u64> {
+    None
+}
+
+fn current_rss_kib() -> Option<u64> {
+    read_proc_status_value_kib("VmRSS:")
+}
+
+fn peak_rss_kib() -> Option<u64> {
+    read_proc_status_value_kib("VmHWM:")
+}
+
+fn format_kib_as_mib(kib: u64) -> String {
+    format!("{:.2} MiB", kib as f64 / 1024.0)
+}
+
+fn format_bytes_as_mib(bytes: usize) -> String {
+    format!("{:.2} MiB", bytes as f64 / (1024.0 * 1024.0))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TrackBenchmark {
+    track_number: u32,
+    elapsed_ms: u128,
+    pcm_bytes: usize,
+    rss_kib_after: Option<u64>,
+}
+
+fn configured_output_root(settings: &Settings) -> PathBuf {
+    if let Some(cli_root) = settings.output_root.as_deref()
+        && !cli_root.trim().is_empty()
+    {
+        return PathBuf::from(cli_root);
+    }
+
+    match std::env::var("CYANRIP_RS_OUTPUT_ROOT") {
+        Ok(v) if !v.trim().is_empty() => PathBuf::from(v),
+        _ => default_runtime_output_root(),
+    }
 }
 
 fn synthetic_track_pcm() -> PcmTrackData {
@@ -1635,10 +1684,7 @@ fn synthetic_track_pcm_for_source() -> Result<PcmTrackData, RunWorkflowError> {
 }
 
 fn render_synthetic_full_rip(settings: &Settings) -> Result<String, RunWorkflowError> {
-    let output_root = match std::env::var("CYANRIP_RS_OUTPUT_ROOT") {
-        Ok(v) if !v.trim().is_empty() => PathBuf::from(v),
-        _ => default_synthetic_output_root(),
-    };
+    let output_root = configured_output_root(settings);
 
     let mut album_meta: HashMap<String, String> = parse_album_metadata_map(settings.album_metadata.as_deref())
         .into_iter()
@@ -1654,7 +1700,7 @@ fn render_synthetic_full_rip(settings: &Settings) -> Result<String, RunWorkflowE
         .entry("media".to_string())
         .or_insert_with(|| default_media_value(settings).to_string());
 
-    let mut tracks = Vec::new();
+    let mut track_plan: Vec<(u32, HashMap<String, String>)> = Vec::new();
     for entry in &settings.track_metadata {
         if let Some((idx, fields)) = parse_track_meta_entry(entry) {
             let mut track_meta: HashMap<String, String> = fields.into_iter().collect();
@@ -1664,40 +1710,48 @@ fn render_synthetic_full_rip(settings: &Settings) -> Result<String, RunWorkflowE
             track_meta
                 .entry("title".to_string())
                 .or_insert_with(|| format!("Synthetic Track {idx:02}"));
-            let pcm = synthetic_track_pcm_for_source()?;
-            tracks.push(TrackOutputInput {
-                track_number: idx,
-                track_meta,
-                pcm,
-            });
+            track_plan.push((idx, track_meta));
         }
     }
 
-    if tracks.is_empty() {
+    if track_plan.is_empty() {
         let mut track_meta = HashMap::new();
         track_meta.insert("track".to_string(), "01".to_string());
         track_meta.insert("title".to_string(), "Synthetic Track 01".to_string());
-        let pcm = synthetic_track_pcm_for_source()?;
-        tracks.push(TrackOutputInput {
-            track_number: 1,
-            track_meta,
-            pcm,
-        });
+        track_plan.push((1, track_meta));
     }
 
-    let result = write_track_outputs(TrackOutputFlowInput {
-        settings: settings.clone(),
-        output_root: output_root.clone(),
-        album_meta,
-        tracks,
-    })
-    .map_err(|e| RunWorkflowError::Runtime(format!("synthetic full-rip failed: {e}")))?;
+    let naming_track_count = track_plan.len();
+    warn_track_path_collisions_for_formats(settings, &album_meta, &track_plan, naming_track_count)
+        .map_err(|e| RunWorkflowError::Runtime(format!("synthetic full-rip failed: {e}")))?;
+
+    let mut written_files = Vec::new();
+    for (track_number, track_meta) in track_plan {
+        let pcm = synthetic_track_pcm_for_source()?;
+        let result = write_track_outputs_with_naming_tracks(
+            TrackOutputFlowInput {
+                settings: settings.clone(),
+                output_root: output_root.clone(),
+                album_meta: album_meta.clone(),
+                tracks: vec![TrackOutputInput {
+                    track_number,
+                    track_meta,
+                    pcm,
+                }],
+            },
+            naming_track_count,
+            false,
+            None,
+        )
+        .map_err(|e| RunWorkflowError::Runtime(format!("synthetic full-rip failed: {e}")))?;
+        written_files.extend(result.written_files);
+    }
 
     let mut out = String::new();
     out.push_str("cyanrip-rs synthetic full-rip mode\n");
     out.push_str(&format!("Output root: {}\n", output_root.display()));
-    out.push_str(&format!("Written files: {}\n", result.written_files.len()));
-    for file in &result.written_files {
+    out.push_str(&format!("Written files: {}\n", written_files.len()));
+    for file in &written_files {
         out.push_str(&format!("FILE {}\n", file.absolute_path.display()));
     }
     Ok(out)
@@ -1832,7 +1886,7 @@ fn acquire_track_pcm_from_physical_reader(
             };
 
             print!(
-                "\rRipping and encoding track {}, progress - {:.2}%, ETA - {:.2} min   ",
+                "\rRipping : track {}, progress - {:.2}%, ETA - {:.2} min   ",
                 track_number, progress, eta_min
             );
             let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -2453,19 +2507,7 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
         }
     }
 
-    let pcm_tracks = match source {
-        FullRipSource::Image => {
-            acquire_tracks_pcm_from_image_reader(settings, &boundaries)?
-        }
-        FullRipSource::Physical => {
-            acquire_tracks_pcm_from_physical_reader(settings, &boundaries)?
-        }
-    };
-
-    let output_root = match std::env::var("CYANRIP_RS_OUTPUT_ROOT") {
-        Ok(v) if !v.trim().is_empty() => PathBuf::from(v),
-        _ => default_runtime_output_root(),
-    };
+    let output_root = configured_output_root(settings);
 
     let mut album_meta: HashMap<String, String> = parse_album_metadata_map(settings.album_metadata.as_deref())
         .into_iter()
@@ -2511,22 +2553,82 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
         .entry("media".to_string())
         .or_insert_with(|| default_media_value(settings).to_string());
 
-    let tracks: Vec<TrackOutputInput> = pcm_tracks
-        .into_iter()
-        .map(|(track_number, pcm)| TrackOutputInput {
-            track_number,
-            track_meta: track_meta_for_number(track_number, &track_meta_map),
-            pcm,
+    let track_plan: Vec<(u32, HashMap<String, String>)> = boundaries
+        .iter()
+        .map(|b| {
+            (
+                b.track_number,
+                track_meta_for_number(b.track_number, &track_meta_map),
+            )
         })
         .collect();
+    let naming_track_count = track_plan.len();
 
-    let result = write_track_outputs(TrackOutputFlowInput {
-        settings: settings.clone(),
-        output_root: output_root.clone(),
-        album_meta,
-        tracks,
-    })
-    .map_err(|e| RunWorkflowError::Runtime(format!("full-rip writer flow failed: {e}")))?;
+    warn_track_path_collisions_for_formats(settings, &album_meta, &track_plan, naming_track_count)
+        .map_err(|e| RunWorkflowError::Runtime(format!("full-rip writer flow failed: {e}")))?;
+
+    let mut written_files = Vec::new();
+    let mut benchmarks = Vec::new();
+    for boundary in &boundaries {
+        let track_started = Instant::now();
+        let pcm = match source {
+            FullRipSource::Image => acquire_tracks_pcm_from_image_reader(
+                settings,
+                std::slice::from_ref(boundary),
+            )?
+            .into_iter()
+            .next()
+            .map(|(_, pcm)| pcm)
+            .ok_or_else(|| {
+                RunWorkflowError::Runtime(format!(
+                    "image track acquisition returned no PCM for track {}",
+                    boundary.track_number
+                ))
+            })?,
+            FullRipSource::Physical => acquire_tracks_pcm_from_physical_reader(
+                settings,
+                std::slice::from_ref(boundary),
+            )?
+            .into_iter()
+            .next()
+            .map(|(_, pcm)| pcm)
+            .ok_or_else(|| {
+                RunWorkflowError::Runtime(format!(
+                    "physical track acquisition returned no PCM for track {}",
+                    boundary.track_number
+                ))
+            })?,
+        };
+        let pcm_bytes = pcm
+            .interleaved_i16_samples
+            .len()
+            .saturating_mul(std::mem::size_of::<i16>());
+
+        let track_meta = track_meta_for_number(boundary.track_number, &track_meta_map);
+        let result = write_track_outputs_with_naming_tracks(
+            TrackOutputFlowInput {
+                settings: settings.clone(),
+                output_root: output_root.clone(),
+                album_meta: album_meta.clone(),
+                tracks: vec![TrackOutputInput {
+                    track_number: boundary.track_number,
+                    track_meta,
+                    pcm,
+                }],
+            },
+            naming_track_count,
+            false,
+            Some(boundary.track_number),
+        )
+        .map_err(|e| RunWorkflowError::Runtime(format!("full-rip writer flow failed: {e}")))?;
+        written_files.extend(result.written_files);
+        benchmarks.push(TrackBenchmark {
+            track_number: boundary.track_number,
+            elapsed_ms: track_started.elapsed().as_millis(),
+            pcm_bytes,
+            rss_kib_after: current_rss_kib(),
+        });
+    }
 
     let mut out = String::new();
     out.push_str("cyanrip-rs full-rip bridge mode\n");
@@ -2538,7 +2640,10 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
         }
     ));
     out.push_str(&format!("Output root: {}\n", output_root.display()));
-    out.push_str(&format!("Written files: {}\n", result.written_files.len()));
+    out.push_str(&format!("Written files: {}\n", written_files.len()));
+    if let Some(peak_kib) = peak_rss_kib() {
+        out.push_str(&format!("Peak RSS:      {}\n", format_kib_as_mib(peak_kib)));
+    }
 
     #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
     if let Some(mf) = metadata_flow.as_ref() {
@@ -2567,6 +2672,10 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
     }
 
     for boundary in &boundaries {
+        let benchmark = benchmarks
+            .iter()
+            .find(|b| b.track_number == boundary.track_number)
+            .copied();
         out.push_str(&format!(
             "TRACK {} START_LSN {} FRAMES {}\n",
             boundary.track_number, boundary.start_lsn, boundary.frame_count
@@ -2594,6 +2703,16 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
                 .start_lsn
                 .saturating_add(boundary.frame_count.saturating_sub(1) as i32)
         ));
+        if let Some(b) = benchmark {
+            out.push_str(&format!(
+                "    Benchmark:   {} ms, PCM {}, RSS {}\n",
+                b.elapsed_ms,
+                format_bytes_as_mib(b.pcm_bytes),
+                b.rss_kib_after
+                    .map(format_kib_as_mib)
+                    .unwrap_or_else(|| "n/a".to_string())
+            ));
+        }
 
         out.push_str("\n  Metadata:\n");
         if let Some(meta) = track_meta_map.get(&boundary.track_number) {
@@ -2611,8 +2730,7 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
         }
 
         out.push_str("\n  File(s):\n");
-        let mut files_for_track = result
-            .written_files
+        let mut files_for_track = written_files
             .iter()
             .filter(|f| f.track_number == boundary.track_number)
             .collect::<Vec<_>>();
@@ -2622,7 +2740,7 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
         }
         out.push('\n');
     }
-    for file in &result.written_files {
+    for file in &written_files {
         out.push_str(&format!("FILE {}\n", file.absolute_path.display()));
     }
     Ok(out)
@@ -3097,10 +3215,98 @@ fn embed_flac_vorbis_comments(
     })
 }
 
-pub fn write_track_outputs(input: TrackOutputFlowInput) -> Result<TrackOutputFlowResult, TrackOutputFlowError> {
+fn warn_track_path_collisions_for_formats(
+    settings: &Settings,
+    album_meta: &HashMap<String, String>,
+    tracks: &[(u32, HashMap<String, String>)],
+    naming_track_count: usize,
+) -> Result<(), TrackOutputFlowError> {
+    let naming_ctx = NamingContext {
+        sanitize_method: settings.sanitize_method,
+        nb_tracks: naming_track_count,
+    };
+
+    for fmt_kind in &settings.outputs {
+        let (format_suffix, extension) = output_format_descriptor(*fmt_kind)
+            .ok_or(TrackOutputFlowError::UnsupportedOutputFormat(*fmt_kind))?;
+
+        let mut collision_input = Vec::with_capacity(tracks.len());
+        for (track_number, track_meta) in tracks {
+            let relative_path_str = build_track_relative_path(
+                &naming_ctx,
+                album_meta,
+                track_meta,
+                &settings.folder_name_scheme,
+                &settings.track_name_scheme,
+                format_suffix,
+                extension,
+            )
+            .map_err(TrackOutputFlowError::Naming)?;
+            collision_input.push((*track_number, relative_path_str));
+        }
+
+        for (a, b, path) in detect_track_path_collisions(&collision_input) {
+            println!(
+                "WARNING: tracks {a} and {b} resolve to the same file \"{path}\", one will overwrite the other!"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn write_track_outputs_with_naming_tracks(
+    input: TrackOutputFlowInput,
+    naming_track_count: usize,
+    emit_collision_warnings: bool,
+    progress_track_number: Option<u32>,
+) -> Result<TrackOutputFlowResult, TrackOutputFlowError> {
     let naming_ctx = NamingContext {
         sanitize_method: input.settings.sanitize_method,
-        nb_tracks: input.tracks.len(),
+        nb_tracks: naming_track_count,
+    };
+
+    let per_output_units = |fmt_kind: OutputFormat| -> usize {
+        match fmt_kind {
+            OutputFormat::Wav => 2,
+            OutputFormat::Flac => 3,
+            _ => 1,
+        }
+    };
+    let total_jobs = input
+        .settings
+        .outputs
+        .iter()
+        .map(|fmt_kind| per_output_units(*fmt_kind).saturating_mul(input.tracks.len()))
+        .sum::<usize>()
+        .max(1);
+    let progress_started = Instant::now();
+    let mut completed_jobs = 0usize;
+
+    let emit_encoding_progress = |track_number: u32, completed: usize| {
+        let progress = (completed as f64 / total_jobs as f64) * 100.0;
+        let elapsed = progress_started.elapsed().as_secs_f64().max(0.001);
+        let eta_label = if completed == 0 {
+            "--.--".to_string()
+        } else {
+            let eta_min = if completed >= total_jobs {
+                0.0
+            } else {
+                let rate = completed as f64 / elapsed;
+                let remaining = total_jobs.saturating_sub(completed) as f64;
+                (remaining / rate) / 60.0
+            };
+            format!("{eta_min:.2}")
+        };
+
+        print!(
+            "\rEncoding: track {}, progress - {:.2}%, ETA - {} min   ",
+            track_number, progress, eta_label
+        );
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        if completed >= total_jobs {
+            println!();
+        }
     };
 
     let mut written_files = Vec::new();
@@ -3130,18 +3336,26 @@ pub fn write_track_outputs(input: TrackOutputFlowInput) -> Result<TrackOutputFlo
             ));
         }
 
-        let collision_input: Vec<(u32, String)> = planned_paths
-            .iter()
-            .map(|(_, track_number, rel, _)| (*track_number, rel.to_string_lossy().to_string()))
-            .collect();
-        for (a, b, path) in detect_track_path_collisions(&collision_input) {
-            println!(
-                "WARNING: tracks {a} and {b} resolve to the same file \"{path}\", one will overwrite the other!"
-            );
+        if emit_collision_warnings {
+            let collision_input: Vec<(u32, String)> = planned_paths
+                .iter()
+                .map(|(_, track_number, rel, _)| (*track_number, rel.to_string_lossy().to_string()))
+                .collect();
+            for (a, b, path) in detect_track_path_collisions(&collision_input) {
+                println!(
+                    "WARNING: tracks {a} and {b} resolve to the same file \"{path}\", one will overwrite the other!"
+                );
+            }
         }
 
         for (idx, _track_number, relative_path, absolute_path) in planned_paths {
             let track = &input.tracks[idx];
+
+            if let Some(track_number) = progress_track_number {
+                if completed_jobs == 0 {
+                    emit_encoding_progress(track_number, completed_jobs);
+                }
+            }
 
             let processed_pcm = process_track_pcm(
                 &track.pcm,
@@ -3157,15 +3371,25 @@ pub fn write_track_outputs(input: TrackOutputFlowInput) -> Result<TrackOutputFlo
                 path: absolute_path.clone(),
                 message: e.to_string(),
             })?;
+            completed_jobs = completed_jobs.saturating_add(1);
+            if let Some(track_number) = progress_track_number {
+                emit_encoding_progress(track_number, completed_jobs);
+            }
 
             match fmt_kind {
-                OutputFormat::Wav => write_wav_file(&absolute_path, &processed_pcm).map_err(|e| {
-                    TrackOutputFlowError::Encode {
-                        output_format: *fmt_kind,
-                        path: absolute_path.clone(),
-                        message: e.to_string(),
+                OutputFormat::Wav => {
+                    write_wav_file(&absolute_path, &processed_pcm).map_err(|e| {
+                        TrackOutputFlowError::Encode {
+                            output_format: *fmt_kind,
+                            path: absolute_path.clone(),
+                            message: e.to_string(),
+                        }
+                    })?;
+                    completed_jobs = completed_jobs.saturating_add(1);
+                    if let Some(track_number) = progress_track_number {
+                        emit_encoding_progress(track_number, completed_jobs);
                     }
-                })?,
+                }
                 OutputFormat::Flac => {
                     write_flac_file(&absolute_path, &processed_pcm).map_err(|e| {
                         TrackOutputFlowError::Encode {
@@ -3174,9 +3398,17 @@ pub fn write_track_outputs(input: TrackOutputFlowInput) -> Result<TrackOutputFlo
                             message: e.to_string(),
                         }
                     })?;
+                    completed_jobs = completed_jobs.saturating_add(1);
+                    if let Some(track_number) = progress_track_number {
+                        emit_encoding_progress(track_number, completed_jobs);
+                    }
 
                     let comments = build_flac_comment_map(&input.settings, &input.album_meta, track);
                     embed_flac_vorbis_comments(&absolute_path, &comments)?;
+                    completed_jobs = completed_jobs.saturating_add(1);
+                    if let Some(track_number) = progress_track_number {
+                        emit_encoding_progress(track_number, completed_jobs);
+                    }
                 }
                 _ => {
                     return Err(TrackOutputFlowError::UnsupportedOutputFormat(*fmt_kind));
@@ -3193,6 +3425,11 @@ pub fn write_track_outputs(input: TrackOutputFlowInput) -> Result<TrackOutputFlo
     }
 
     Ok(TrackOutputFlowResult { written_files })
+}
+
+pub fn write_track_outputs(input: TrackOutputFlowInput) -> Result<TrackOutputFlowResult, TrackOutputFlowError> {
+    let naming_track_count = input.tracks.len();
+    write_track_outputs_with_naming_tracks(input, naming_track_count, true, None)
 }
 
 #[cfg(test)]
@@ -3934,19 +4171,23 @@ FILE "disc.bin" BINARY
     }
 
     fn unique_temp_output_root() -> PathBuf {
+        let repo_tmp = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tmp");
+        std::fs::create_dir_all(&repo_tmp).expect("repo tmp root should be creatable");
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time should be after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("cyanrip-rs-output-dispatch-{now}"))
+        repo_tmp.join(format!("cyanrip-rs-output-dispatch-{now}"))
     }
 
     fn unique_temp_cue_path() -> PathBuf {
+        let repo_tmp = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tmp");
+        std::fs::create_dir_all(&repo_tmp).expect("repo tmp root should be creatable");
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("time should be after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("cyanrip-rs-image-toc-{now}.cue"))
+        repo_tmp.join(format!("cyanrip-rs-image-toc-{now}.cue"))
     }
 
     fn sample_pcm() -> PcmTrackData {

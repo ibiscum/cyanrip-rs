@@ -3,6 +3,12 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn repo_tmp_root() -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tmp");
+    fs::create_dir_all(&root).expect("repo tmp root should be creatable");
+    root
+}
+
 fn run_capture(binary: &PathBuf, args: &[&str]) -> (i32, String) {
     let out = Command::new(binary)
         .args(args)
@@ -63,7 +69,7 @@ fn unique_temp_output_root() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time should be after epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("cyanrip-rs-synth-cli-it-{now}"))
+    repo_tmp_root().join(format!("cyanrip-rs-synth-cli-it-{now}"))
 }
 
 fn unique_temp_cue_path() -> PathBuf {
@@ -71,7 +77,7 @@ fn unique_temp_cue_path() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time should be after epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("cyanrip-rs-run-workflow-{now}.cue"))
+    repo_tmp_root().join(format!("cyanrip-rs-run-workflow-{now}.cue"))
 }
 
 #[test]
@@ -144,6 +150,48 @@ fn run_mode_defaults_output_root_to_current_working_directory() {
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&working_root);
     assert!(cleanup.is_ok(), "cwd output root should be removable after run");
+}
+
+#[test]
+fn run_mode_outputroot_cli_overrides_env_output_root() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let env_output_root = unique_temp_output_root();
+    let cli_output_root = unique_temp_output_root();
+    let env_output_root_s = env_output_root.to_string_lossy().to_string();
+    let cli_output_root_s = cli_output_root.to_string_lossy().to_string();
+
+    let cue_path = unique_temp_cue_path();
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
+
+    let (code, out) = run_capture_with_env(
+        &rust_bin,
+        &["-o", "flac", "-d", &cue_path_s, "-B", &cli_output_root_s],
+        &[("CYANRIP_RS_OUTPUT_ROOT", &env_output_root_s)],
+    );
+
+    assert_eq!(code, 0, "full-rip run should succeed: {out}");
+    assert!(
+        out.contains(&format!("Output root: {}", cli_output_root.display())),
+        "expected CLI output root to win over env var; output: {out}"
+    );
+
+    let file_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("FILE ")).collect();
+    assert!(!file_lines.is_empty(), "expected at least one written file, output: {out}");
+    for line in file_lines {
+        let path = PathBuf::from(line.trim_start_matches("FILE ").trim());
+        assert!(
+            path.starts_with(&cli_output_root),
+            "expected file path in CLI output root: {}",
+            path.display()
+        );
+        assert!(path.exists(), "expected output file to exist: {}", path.display());
+    }
+
+    let _ = fs::remove_file(&cue_path);
+    let _ = fs::remove_dir_all(&env_output_root);
+    let cleanup = fs::remove_dir_all(&cli_output_root);
+    assert!(cleanup.is_ok(), "CLI output root should be removable after run");
 }
 
 #[test]

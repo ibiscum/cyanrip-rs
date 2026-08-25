@@ -1,5 +1,27 @@
 # Migration Changelog
 
+## 2026-08-25
+
+### `-B/--outputroot` Help and Option-Flow Documentation
+- Clarified CLI `-h` help text for [../src/cli.rs](../src/cli.rs): `-B/--outputroot` now explicitly states it overrides `CYANRIP_RS_OUTPUT_ROOT`.
+- Added help-output regression coverage in [../src/cli.rs](../src/cli.rs) to lock the new `-B/--outputroot` description.
+- Updated CLI behavior freeze defaults and precedence notes in [../CLI_BEHAVIOR_FREEZE.md](../CLI_BEHAVIOR_FREEZE.md) to include `output_root` and output-root resolution order.
+- Added dedicated option-flow documentation in [OUTPUTROOT_OPTION_FLOW.md](OUTPUTROOT_OPTION_FLOW.md), including precedence rules, behavior notes, and usage examples.
+- Linked the new flow document from [README.md](README.md) in this docs directory.
+
+### Streaming Track-By-Track Full-Rip Pipeline
+- Refactored full-rip execution in [../src/app.rs](../src/app.rs) to process one track at a time (acquire PCM, encode/write outputs, then drop PCM) instead of buffering all selected tracks before writing.
+- Applied the same streaming approach to synthetic full-rip mode in [../src/app.rs](../src/app.rs).
+- Added internal writer helpers in [../src/app.rs](../src/app.rs) to preserve naming context and collision-warning behavior while enabling per-track writes.
+- Kept public writer API compatibility (`write_track_outputs`) and verified behavior through focused workflow integration tests.
+- Added runtime benchmark reporting in [../src/app.rs](../src/app.rs): each track summary now includes a compact `Benchmark` line (elapsed ms, PCM buffer size, and current RSS when available), and full-rip output includes a Linux `/proc`-based `Peak RSS` line when available.
+- Added live encoding-phase progress updates in [../src/app.rs](../src/app.rs) with percentage and ETA (`Encoding track ...`) during per-track output writing.
+- Renamed the physical read-phase live status line from `Ripping and encoding track ...` to `Ripping track ...` in [../src/app.rs](../src/app.rs).
+
+### Test Artifact Output Root Normalization (`tmp/`)
+- Updated audio-producing tests to write generated files/directories under the repository-local `tmp/` folder (git-ignored) instead of system temp paths.
+- Updated helper paths in [../tests/wav_pipeline.rs](../tests/wav_pipeline.rs), [../tests/flac_pipeline.rs](../tests/flac_pipeline.rs), [../tests/app_cli_integration.rs](../tests/app_cli_integration.rs), [../tests/run_workflow_cli.rs](../tests/run_workflow_cli.rs), and [../src/app.rs](../src/app.rs) test module.
+
 ## 2026-08-24
 
 ### M7 Paranoia Main-Flow Wiring and `--no-accurip` Option Flow

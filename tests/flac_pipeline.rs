@@ -6,11 +6,13 @@ use cyanrip_rs::audio::flac::write_flac_file;
 use cyanrip_rs::audio::{PcmSpec, PcmTrackData};
 
 fn unique_temp_flac_path() -> PathBuf {
+    let repo_tmp = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tmp");
+    fs::create_dir_all(&repo_tmp).expect("repo tmp root should be creatable");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time should be after epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("cyanrip-rs-flac-{now}.flac"))
+    repo_tmp.join(format!("cyanrip-rs-flac-{now}.flac"))
 }
 
 #[test]
