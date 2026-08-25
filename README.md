@@ -5,6 +5,14 @@ This repository is an attempt to port from C to Rust with the help of GitHub Co-
 Step-by-step migration roadmap is documented in [MIGRATION_PLAN.md](MIGRATION_PLAN.md).
 Feature-by-feature parity tracking is documented in [PARITY_MATRIX.md](PARITY_MATRIX.md).
 
+## Run in development mode
+
+```bash
+cargo run --features "backend-libcdio-sys paranoia cdda" -- -s 103 -B ~/rips
+```
+
+When `-B` is provided, it takes precedence over `CYANRIP_RS_OUTPUT_ROOT`.
+
 ## Update Workflow
 
 For every PR, update docs as part of the same change set:

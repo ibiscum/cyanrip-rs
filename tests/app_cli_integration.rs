@@ -112,11 +112,13 @@ fn sample_pcm() -> PcmTrackData {
 }
 
 fn unique_temp_output_root() -> PathBuf {
+    let repo_tmp = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tmp");
+    std::fs::create_dir_all(&repo_tmp).expect("repo tmp root should be creatable");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time should be after epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("cyanrip-rs-cli-app-it-{now}"))
+    repo_tmp.join(format!("cyanrip-rs-cli-app-it-{now}"))
 }
 
 fn first_vorbis_value(tag: &metaflac::Tag, key: &str) -> Option<String> {

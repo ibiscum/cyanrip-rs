@@ -93,6 +93,7 @@ pub enum ReleaseSelection {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub dev_path: Option<String>,
+    pub output_root: Option<String>,
     pub folder_name_scheme: String,
     pub track_name_scheme: String,
     pub log_name_scheme: String,
@@ -137,6 +138,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             dev_path: None,
+            output_root: None,
             folder_name_scheme:
                 "{album}{if #releasecomment# > #0# (|releasecomment|)} [{format}]".to_string(),
             track_name_scheme: "{if #totaldiscs# > #1#|disc|.}{track} - {title}".to_string(),

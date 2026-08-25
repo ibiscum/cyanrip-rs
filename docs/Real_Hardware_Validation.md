@@ -1,4 +1,4 @@
-# M6 Real-Hardware Reliability Validation
+# Real-Hardware Reliability Validation
 
 This document defines practical, repeatable real-drive validation scenarios for M6 and records acceptance evidence.
 
