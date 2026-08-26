@@ -1796,6 +1796,11 @@ fn acquire_track_pcm_from_physical_reader(
     let device_path = settings.dev_path.as_deref().or(Some("/dev/cdrom"));
 
     if settings.paranoia_level > 0 {
+        println!(
+            "Paranoia precheck: track {} (level {}). Verifying read consistency before direct rip...",
+            track_number, settings.paranoia_level
+        );
+
         let mut retry_policy = if settings.ripping_retries > 0 {
             RetryPolicy::new(
                 settings.ripping_retries as u32,
@@ -1843,6 +1848,16 @@ fn acquire_track_pcm_from_physical_reader(
                 run.state
             );
         }
+
+        println!(
+            "Paranoia precheck complete for track {} (passes: {}, state: {:?}). Starting direct read...",
+            track_number, run.passes, run.state
+        );
+    } else {
+        println!(
+            "Paranoia disabled; starting direct drive read for track {}...",
+            track_number
+        );
     }
 
     let mut reader = open_linux_physical_drive(device_path).map_err(|e| {
@@ -1886,10 +1901,8 @@ fn acquire_track_pcm_from_physical_reader(
             };
 
             print!(
-                "\rRipping : track {}, progress - {:.2}%, ETA - {:.2} min   ",
-                track_number, progress, eta_min
-            );
-            let _ = std::io::Write::flush(&mut std::io::stdout());
+                "\rRipping          : track {}, progress - {:.2}%, ETA - {:.2} min   ", track_number, progress, eta_min);
+                let _ = std::io::Write::flush(&mut std::io::stdout());
             last_update = now;
         }
     }
@@ -2483,6 +2496,11 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
                     );
                 }
 
+                println!(
+                    "Preparing rip metadata and file naming for {} selected track(s)...",
+                    boundaries.len()
+                );
+
                 for b in &boundaries {
                     let idx = b.track_number.saturating_sub(1) as usize;
                     if let Some(release) = mf.musicbrainz.as_ref()
@@ -2564,8 +2582,16 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
         .collect();
     let naming_track_count = track_plan.len();
 
+    println!(
+        "Checking output path collisions for {} track(s) across {} format(s)...",
+        naming_track_count,
+        settings.outputs.len()
+    );
+
     warn_track_path_collisions_for_formats(settings, &album_meta, &track_plan, naming_track_count)
         .map_err(|e| RunWorkflowError::Runtime(format!("full-rip writer flow failed: {e}")))?;
+
+    println!("Starting track extraction and encoding...");
 
     let mut written_files = Vec::new();
     let mut benchmarks = Vec::new();
@@ -3300,8 +3326,7 @@ fn write_track_outputs_with_naming_tracks(
         };
 
         print!(
-            "\rEncoding: track {}, progress - {:.2}%, ETA - {} min   ",
-            track_number, progress, eta_label
+            "\rEncoding         : track {}, progress - {:.2}%, ETA - {} min   ", track_number, progress, eta_label
         );
         let _ = std::io::Write::flush(&mut std::io::stdout());
         if completed >= total_jobs {

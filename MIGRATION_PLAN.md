@@ -1,5 +1,7 @@
 # cyanrip Rust Migration Plan
 
+Last updated: 2026-08-26
+
 This document is the implementation roadmap for porting to Rust in phases, using native Rust libraries whenever practical.
 
 ## Goals
@@ -12,9 +14,11 @@ This document is the implementation roadmap for porting to Rust in phases, using
 ## Current State
 
 - Base crate exists in this repository.
-- Initial core parsing and validation logic has been ported with unit tests.
-- No end-to-end ripping flow yet.
-- Paranoia-mode rip control state machine is now scaffolded in Rust with regression tests; CDDA frame I/O wiring is still pending.
+- CLI/config parity is complete and regression-covered.
+- Deterministic modules (naming, CUE, log formatting, FUN512/checksum) are complete and test-covered.
+- Metadata services (DiscID, MusicBrainz, cover art, AccurateRip fetch/parse) are integrated and test-covered with mocked I/O.
+- WAV/FLAC output paths and FLAC tag embedding are implemented with integration tests.
+- End-to-end run workflow exists for info-only, cue-only, verify-log, find-offset, and default run bridging; production hardening and final parity closure remain in progress.
 
 ## Milestone Checklist
 
@@ -107,7 +111,7 @@ Exit criteria:
 
 ### M4 - Audio output pipeline (native Rust first)
 
-Status: [~]
+Status: [x]
 
 Checklist:
 - [x] Introduce PCM frame model and processing pipeline interfaces.
@@ -115,8 +119,7 @@ Checklist:
 - [x] Implement FLAC output path.
 - [x] Add per-track writer flow and output dispatch for WAV/FLAC.
 - [x] Add metadata embedding for FLAC tags (Vorbis comments).
-- [ ] Add metadata embedding for additional codecs as implemented.
-- [ ] Keep unsupported codecs behind explicit feature flags or deferred list.
+- [x] Keep unsupported codecs behind explicit deferred scope (FLAC/WAV target for current migration).
 
 Suggested crates:
 - hound
@@ -129,7 +132,7 @@ Exit criteria:
 
 ### M5 - CD reader abstraction and image-backed reader
 
-Status: [ ]
+Status: [~]
 
 Checklist:
 - [x] Add a deterministic paranoia-mode rip state machine model (retry, abort, finalize transitions).
@@ -175,8 +178,12 @@ Exit criteria:
 Status: [~]
 
 Checklist:
-- [~] Wire end-to-end command workflow (main now dispatches to app-level run workflow; info-only, cue-only, and find-offset modes now execute successfully with structured output; `--find-offset` now runs a real physical-drive path on linux+libcdio builds using drive TOC + AccurateRip lookup + sample-offset probing around frame 450, including multi-track confirmation/conflict replacement and radius escalation; default Run now selects reader source from CLI settings/device kind (image vs physical), runs paranoia/retry validation on selected tracks, resolves TOC-like per-track frame boundaries (cue-derived image TOC + image-TOC env override + metadata override + deterministic fallback), acquires frames, and writes selected tracks through a multi-track full-rip bridge path; opt-in synthetic full-rip mode remains available for hardware-free testing; hardware-backed production ripping flow is still pending hardening).
-- [~] Add differential tests against C binary on shared fixtures (CLI-first-slice harness added and verify-log fixture cases included; broader workflow differentials pending).
+- [~] Wire end-to-end command workflow.
+- [x] Main dispatches into app-level run workflow.
+- [x] `-I`, `-J`, and `--verify-log` runtime modes are functional and test-covered.
+- [x] `--find-offset` uses Linux/libcdio TOC + AccurateRip lookup + sample-offset probing, including multi-track confirmation/conflict replacement and radius escalation.
+- [~] Default run path bridges selected tracks through reader -> paranoia validation -> writer flow for image and physical sources; production hardening and remaining parity details are pending.
+- [~] Add differential tests against C binary on shared fixtures (CLI and verify-log slices complete; broader workflow differentials pending).
 - [ ] Finalize compatibility notes and known differences.
 - [ ] Prepare release checklist and migration notes.
 
@@ -200,40 +207,22 @@ Exit criteria:
 - cyanrip_encode.c -> src/audio/mod.rs + format-specific modules
 - fifo_frame.c/fifo_packet.c -> src/audio/queue.rs (channel-based)
 
-## Repository Implementation Plan (working sequence)
+## Repository Implementation Plan (remaining sequence)
 
-1. Establish structure and ownership
-- [ ] Create module tree and placeholder files for M1 and M2.
-- [ ] Keep domain types centralized in src/lib.rs or src/domain.rs.
+1. Close remaining M5 parity gaps
+- [ ] Port and validate offset/overread policy behavior against C references for image and physical readers.
 
-2. Finish M1 fully
-- [ ] Add Clap parser and map to existing Settings.
-- [ ] Add CLI regression tests for valid/invalid command lines.
+2. Harden default full-rip production path (M7)
+- [ ] Improve physical-drive boundary/error handling parity in the non-synthetic run path.
+- [ ] Complete AccurateRip checksum verification wiring in rip-time path and finish-summary reporting.
 
-3. Implement M2 in this order
-- [ ] naming
-- [ ] cue
-- [ ] fun512/checksum
-- [ ] deterministic log report formatting
+3. Expand differential coverage
+- [ ] Add fixture-backed workflow differential tests beyond CLI/verify-log.
+- [ ] Add targeted differential cases for find-offset and selected-track run behavior.
 
-4. Implement M3 with mocked I/O first
-- [ ] Add HTTP client traits.
-- [ ] Add wiremock tests before live calls.
-
-5. Implement M4 minimal output set
-- [ ] WAV first.
-- [ ] FLAC second.
-- [ ] Defer unsupported formats with explicit errors.
-
-6. Implement M5 and M6
-- [x] Add paranoia state machine scaffold and regression tests.
-- [ ] Build image-reader backend for CI.
-- [ ] Add physical-reader backend behind cfg(target_os = "linux").
-- [ ] Integrate state machine events into read/decode/encode loop.
-
-7. Complete M7
-- [ ] Differential output comparison harness.
-- [ ] Final parity report.
+4. Finalize release parity package
+- [ ] Document known differences and accepted deviations.
+- [ ] Prepare release checklist and migration notes.
 
 ## Testing Plan
 
@@ -243,6 +232,7 @@ Exit criteria:
 - End-to-end tests using local image fixtures.
 - Differential tests against the C binary for selected scenarios.
 - State-machine regression tests for paranoia transitions (retry loops, media-change abort, retry-limit finalize).
+- Hardware-gated validation scenarios for Linux/libcdio reader parity and interruption/media-change behavior.
 
 ## Risk and Mitigation
 
