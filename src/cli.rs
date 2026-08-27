@@ -2,8 +2,8 @@ use clap::{CommandFactory, Parser};
 
 use crate::{
     MAX_PARANOIA_LEVEL, Settings, apply_pregap_entries,
-    calc_over_under_read_frames, parse_cover_size, parse_disc, parse_outputs, parse_paranoia,
-    parse_release, parse_sanitize, parse_track_indices, validate_folder_scheme,
+    calc_over_under_read_frames, parse_cover_size, parse_cover_specs, parse_disc, parse_outputs,
+    parse_paranoia, parse_release, parse_sanitize, parse_track_indices, validate_folder_scheme,
     validate_mode_combo,
 };
 
@@ -157,6 +157,15 @@ pub struct CliArgs {
         help = "Bitrate of lossy files in kbps"
     )]
     pub bitrate: f32,
+
+    #[arg(
+        short = 'B',
+        long = "output-root",
+        alias = "outputroot",
+        help_heading = "Output options",
+        help = "Base output directory for ripped files (overrides CYANRIP_RS_OUTPUT_ROOT)"
+    )]
+    pub outputroot: Option<String>,
 
     #[arg(
         short = 'D',
@@ -374,6 +383,7 @@ impl CliArgs {
         settings.ripping_retries = self.repeat_rips;
         settings.speed = self.speed;
         settings.bitrate_kbps = self.bitrate;
+        settings.output_root = self.outputroot.clone();
         settings.overread_leadinout = self.overread;
         settings.decode_hdcd = self.hdcd;
         settings.force_deemphasis = self.force_deemphasis;
@@ -478,6 +488,8 @@ impl CliArgs {
             settings.discnumber = discnumber;
             settings.totaldiscs = totaldiscs;
         }
+
+        parse_cover_specs(&settings.cover_specs)?;
 
         Ok(CliConfig {
             settings,
@@ -593,6 +605,15 @@ mod tests {
         assert_eq!(cfg.settings.rip_indices_count, 3);
         assert_eq!(cfg.settings.pregap_action[0], PregapAction::Drop);
         assert_eq!(cfg.settings.pregap_action[2], PregapAction::Merge);
+    }
+
+    #[test]
+    fn maps_output_root_to_settings() {
+        let cfg = parse_from_iter(["cyanrip-rs", "--output-root", "/tmp/cyanrip-out"]).unwrap();
+        assert_eq!(
+            cfg.settings.output_root.as_deref(),
+            Some("/tmp/cyanrip-out")
+        );
     }
 
     #[test]
@@ -810,6 +831,40 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_cover_track_index_with_exact_message() {
+        let err = parse_from_iter(["cyanrip-rs", "-C", "0=front.jpg"]).unwrap_err();
+        assert_eq!(err, "Invalid track idx for cover art: 0");
+    }
+
+    #[test]
+    fn rejects_duplicate_cover_track_index_with_exact_message() {
+        let err = parse_from_iter([
+            "cyanrip-rs",
+            "-C",
+            "1=track1-a.jpg",
+            "-C",
+            "1=track1-b.jpg",
+        ])
+        .unwrap_err();
+        assert_eq!(err, "Cover art already specified for track idx 1!");
+    }
+
+    #[test]
+    fn rejects_third_unkeyed_cover_with_exact_message() {
+        let err = parse_from_iter([
+            "cyanrip-rs",
+            "-C",
+            "front.jpg",
+            "-C",
+            "back.jpg",
+            "-C",
+            "extra.jpg",
+        ])
+        .unwrap_err();
+        assert_eq!(err, "No cover art location specified for \"extra.jpg\"");
+    }
+
+    #[test]
     fn rejects_duplicate_outputs_with_exact_message() {
         let err = parse_from_iter(["cyanrip-rs", "-o", "flac,flac"]).unwrap_err();
         assert_eq!(err, "Duplicated format \"flac\"");
@@ -846,8 +901,8 @@ mod tests {
 
         let expected: BTreeSet<char> = [
             'd', 's', 'r', 'Z', 'S', 'p', 'P', 'O', 'H', 'E', 'W', 'K', 'o', 'b', 'D', 'F',
-            'L', 'M', 'l', 'T', 'I', 'J', 'a', 't', 'R', 'c', 'C', 'N', 'A', 'U', 'm', 'G',
-            'Q', 'f', 'Y',
+            'B', 'L', 'M', 'l', 'T', 'I', 'J', 'a', 't', 'R', 'c', 'C', 'N', 'A', 'U', 'm',
+            'G', 'Q', 'f', 'Y',
         ]
         .into_iter()
         .collect();
@@ -870,5 +925,8 @@ mod tests {
         assert!(help.contains("Track pregap handling: N=default|drop|merge|track (repeatable)"));
         assert!(help.contains("Only generate and print a CUE sheet, don't rip"));
         assert!(help.contains("Verify a rip log's FUN512 checksum"));
+        assert!(help.contains(
+            "Base output directory for ripped files (overrides CYANRIP_RS_OUTPUT_ROOT)"
+        ));
     }
 }

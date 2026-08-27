@@ -11,6 +11,12 @@ pub struct PcmTrackData {
 	pub interleaved_i16_samples: Vec<i16>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessedPcmTrackData {
+	pub spec: PcmSpec,
+	pub interleaved_i32_samples: Vec<i32>,
+}
+
 pub mod flac;
 pub mod process;
 pub mod wav;

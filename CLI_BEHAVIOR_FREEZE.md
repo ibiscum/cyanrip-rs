@@ -14,6 +14,7 @@ Scope:
 Expected defaults when invoked with no flags:
 - action: Run
 - dev_path: None
+- output_root: None
 - offset: 0
 - over_under_read_frames: 0
 - max_retries: 10
@@ -103,6 +104,11 @@ Precedence is frozen:
 1. verify-log mode (-Y/--verify-log) short-circuits everything else and returns action VerifyLog.
 2. outputs help mode (-o help) short-circuits late validations and returns action ShowOutputsHelp.
 3. otherwise normal Run validation path is applied.
+
+Output root precedence is frozen:
+1. `-B/--output-root` when set and non-empty.
+2. `CYANRIP_RS_OUTPUT_ROOT` when set and non-empty.
+3. current working directory fallback.
 
 Side-effect behavior is frozen:
 - info-only (-I):

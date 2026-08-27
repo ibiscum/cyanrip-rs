@@ -1,4 +1,4 @@
-# M7 Differential Harness (First Slice)
+# Differential Harness (First Slice)
 
 This document defines the first M7 differential-test slice against the upstream C binary, focused on CLI-visible behavior that is deterministic and hardware-independent.
 

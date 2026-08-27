@@ -3,6 +3,12 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn repo_tmp_root() -> PathBuf {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tmp");
+    fs::create_dir_all(&root).expect("repo tmp root should be creatable");
+    root
+}
+
 fn run_capture(binary: &PathBuf, args: &[&str]) -> (i32, String) {
     let out = Command::new(binary)
         .args(args)
@@ -63,7 +69,7 @@ fn unique_temp_output_root() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time should be after epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("cyanrip-rs-synth-cli-it-{now}"))
+    repo_tmp_root().join(format!("cyanrip-rs-synth-cli-it-{now}"))
 }
 
 fn unique_temp_cue_path() -> PathBuf {
@@ -71,7 +77,16 @@ fn unique_temp_cue_path() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time should be after epoch")
         .as_nanos();
-    std::env::temp_dir().join(format!("cyanrip-rs-run-workflow-{now}.cue"))
+    repo_tmp_root().join(format!("cyanrip-rs-run-workflow-{now}.cue"))
+}
+
+fn first_file_path_for_extension(output: &str, ext: &str) -> Option<PathBuf> {
+    output
+        .lines()
+        .filter_map(|line| line.strip_prefix("FILE "))
+        .map(str::trim)
+        .find(|path| path.ends_with(ext))
+        .map(PathBuf::from)
 }
 
 #[test]
@@ -104,6 +119,46 @@ fn run_mode_defaults_to_image_reader_full_rip_bridge() {
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
     assert!(cleanup.is_ok(), "full-rip bridge output root should be removable");
+}
+
+#[test]
+fn run_mode_hdcd_outputs_24_bit_wav_and_flac_in_single_run() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let output_root = unique_temp_output_root();
+    let output_root_s = output_root.to_string_lossy().to_string();
+    let cue_path = unique_temp_cue_path();
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
+
+    let (code, out) = run_capture_with_env(
+        &rust_bin,
+        &["-H", "-o", "wav,flac", "-d", &cue_path_s],
+        &[("CYANRIP_RS_OUTPUT_ROOT", &output_root_s)],
+    );
+
+    assert_eq!(code, 0, "hdcd run should succeed: {out}");
+
+    let wav_path = first_file_path_for_extension(&out, ".wav")
+        .expect("expected one WAV output file in run output");
+    let flac_path = first_file_path_for_extension(&out, ".flac")
+        .expect("expected one FLAC output file in run output");
+
+    assert!(wav_path.exists(), "expected WAV output path to exist: {}", wav_path.display());
+    assert!(
+        flac_path.exists(),
+        "expected FLAC output path to exist: {}",
+        flac_path.display()
+    );
+
+    let wav_reader = hound::WavReader::open(&wav_path).expect("written wav should be readable");
+    assert_eq!(wav_reader.spec().bits_per_sample, 24);
+
+    let flac_reader = claxon::FlacReader::open(&flac_path).expect("written flac should be readable");
+    assert_eq!(flac_reader.streaminfo().bits_per_sample, 24);
+
+    let _ = fs::remove_file(&cue_path);
+    let cleanup = fs::remove_dir_all(&output_root);
+    assert!(cleanup.is_ok(), "temporary hdcd output root should be removable");
 }
 
 #[test]
@@ -144,6 +199,346 @@ fn run_mode_defaults_output_root_to_current_working_directory() {
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&working_root);
     assert!(cleanup.is_ok(), "cwd output root should be removable after run");
+}
+
+#[test]
+fn run_mode_output_root_cli_overrides_env_output_root() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let env_output_root = unique_temp_output_root();
+    let cli_output_root = unique_temp_output_root();
+    let env_output_root_s = env_output_root.to_string_lossy().to_string();
+    let cli_output_root_s = cli_output_root.to_string_lossy().to_string();
+
+    let cue_path = unique_temp_cue_path();
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
+
+    let (code, out) = run_capture_with_env(
+        &rust_bin,
+        &["-o", "flac", "-d", &cue_path_s, "-B", &cli_output_root_s],
+        &[("CYANRIP_RS_OUTPUT_ROOT", &env_output_root_s)],
+    );
+
+    assert_eq!(code, 0, "full-rip run should succeed: {out}");
+    assert!(
+        out.contains(&format!("Output root: {}", cli_output_root.display())),
+        "expected CLI output root to win over env var; output: {out}"
+    );
+
+    let file_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("FILE ")).collect();
+    assert!(!file_lines.is_empty(), "expected at least one written file, output: {out}");
+    for line in file_lines {
+        let path = PathBuf::from(line.trim_start_matches("FILE ").trim());
+        assert!(
+            path.starts_with(&cli_output_root),
+            "expected file path in CLI output root: {}",
+            path.display()
+        );
+        assert!(path.exists(), "expected output file to exist: {}", path.display());
+    }
+
+    let _ = fs::remove_file(&cue_path);
+    let _ = fs::remove_dir_all(&env_output_root);
+    let cleanup = fs::remove_dir_all(&cli_output_root);
+    assert!(cleanup.is_ok(), "CLI output root should be removable after run");
+}
+
+#[test]
+fn run_mode_cover_front_uses_cli_output_root() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let output_root = unique_temp_output_root();
+    let output_root_s = output_root.to_string_lossy().to_string();
+
+    fs::create_dir_all(&output_root).expect("output root should be creatable");
+    let cover_source = output_root.join("front-source.jpg");
+    fs::write(&cover_source, [0x11u8, 0x22u8, 0x33u8]).expect("cover source should be writable");
+    let cover_source_s = cover_source.to_string_lossy().to_string();
+
+    let cue_path = unique_temp_cue_path();
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
+
+    let cover_arg = format!("Front={cover_source_s}");
+    let (code, out) = run_capture(
+        &rust_bin,
+        &[
+            "-o",
+            "flac",
+            "-d",
+            &cue_path_s,
+            "--output-root",
+            &output_root_s,
+            "-C",
+            &cover_arg,
+        ],
+    );
+
+    assert_eq!(code, 0, "full-rip run should succeed: {out}");
+    let expected_cover = output_root.join("Runtime Album [FLAC]/Front.jpg");
+    assert!(
+        expected_cover.exists(),
+        "expected cover file in CLI output root: {}",
+        expected_cover.display()
+    );
+
+    let _ = fs::remove_file(&cue_path);
+    let cleanup = fs::remove_dir_all(&output_root);
+    assert!(cleanup.is_ok(), "CLI cover output root should be removable after run");
+}
+
+#[test]
+fn run_mode_cover_front_uses_env_output_root_when_cli_unset() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let output_root = unique_temp_output_root();
+    let output_root_s = output_root.to_string_lossy().to_string();
+
+    fs::create_dir_all(&output_root).expect("output root should be creatable");
+    let cover_source = output_root.join("front-source.jpg");
+    fs::write(&cover_source, [0x44u8, 0x55u8, 0x66u8]).expect("cover source should be writable");
+    let cover_source_s = cover_source.to_string_lossy().to_string();
+
+    let cue_path = unique_temp_cue_path();
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
+
+    let cover_arg = format!("Front={cover_source_s}");
+    let (code, out) = run_capture_with_env(
+        &rust_bin,
+        &["-o", "flac", "-d", &cue_path_s, "-C", &cover_arg],
+        &[("CYANRIP_RS_OUTPUT_ROOT", &output_root_s)],
+    );
+
+    assert_eq!(code, 0, "full-rip run should succeed: {out}");
+    let expected_cover = output_root.join("Runtime Album [FLAC]/Front.jpg");
+    assert!(
+        expected_cover.exists(),
+        "expected cover file in env output root: {}",
+        expected_cover.display()
+    );
+
+    let _ = fs::remove_file(&cue_path);
+    let cleanup = fs::remove_dir_all(&output_root);
+    assert!(cleanup.is_ok(), "env cover output root should be removable after run");
+}
+
+#[test]
+fn run_mode_cover_front_defaults_to_working_directory_output_root() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let working_root = unique_temp_output_root();
+    fs::create_dir_all(&working_root).expect("working root should be creatable");
+
+    let cover_source = working_root.join("front-source.jpg");
+    fs::write(&cover_source, [0x77u8, 0x88u8, 0x99u8]).expect("cover source should be writable");
+    let cover_source_s = cover_source.to_string_lossy().to_string();
+
+    let cue_path = working_root.join("disc.cue");
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
+
+    let cover_arg = format!("Front={cover_source_s}");
+    let (code, out) = run_capture_in_dir_with_env(
+        &rust_bin,
+        &working_root,
+        &["-o", "flac", "-d", &cue_path_s, "-C", &cover_arg],
+        &[],
+    );
+
+    assert_eq!(code, 0, "full-rip run should succeed: {out}");
+    let expected_cover = working_root.join("Runtime Album [FLAC]/Front.jpg");
+    assert!(
+        expected_cover.exists(),
+        "expected cover file in cwd output root: {}",
+        expected_cover.display()
+    );
+
+    let cleanup = fs::remove_dir_all(&working_root);
+    assert!(cleanup.is_ok(), "cwd cover output root should be removable after run");
+}
+
+#[test]
+fn run_mode_log_scheme_uses_cli_output_root() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let output_root = unique_temp_output_root();
+    let output_root_s = output_root.to_string_lossy().to_string();
+    let cue_path = unique_temp_cue_path();
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
+
+    let (code, out) = run_capture(
+        &rust_bin,
+        &[
+            "-o",
+            "flac",
+            "-d",
+            &cue_path_s,
+            "--output-root",
+            &output_root_s,
+            "-L",
+            "session-log",
+        ],
+    );
+
+    assert_eq!(code, 0, "full-rip run should succeed: {out}");
+    let expected_log = output_root.join("Runtime Album [FLAC]/session-log.log");
+    assert!(
+        expected_log.exists(),
+        "expected log file in CLI output root: {}",
+        expected_log.display()
+    );
+
+    let _ = fs::remove_file(&cue_path);
+    let cleanup = fs::remove_dir_all(&output_root);
+    assert!(cleanup.is_ok(), "CLI log output root should be removable after run");
+}
+
+#[test]
+fn run_mode_log_scheme_uses_env_output_root_when_cli_unset() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let output_root = unique_temp_output_root();
+    let output_root_s = output_root.to_string_lossy().to_string();
+    let cue_path = unique_temp_cue_path();
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
+
+    let (code, out) = run_capture_with_env(
+        &rust_bin,
+        &["-o", "flac", "-d", &cue_path_s, "-L", "env-log"],
+        &[("CYANRIP_RS_OUTPUT_ROOT", &output_root_s)],
+    );
+
+    assert_eq!(code, 0, "full-rip run should succeed: {out}");
+    let expected_log = output_root.join("Runtime Album [FLAC]/env-log.log");
+    assert!(
+        expected_log.exists(),
+        "expected log file in env output root: {}",
+        expected_log.display()
+    );
+
+    let _ = fs::remove_file(&cue_path);
+    let cleanup = fs::remove_dir_all(&output_root);
+    assert!(cleanup.is_ok(), "env log output root should be removable after run");
+}
+
+#[test]
+fn run_mode_log_scheme_defaults_to_working_directory_output_root() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let working_root = unique_temp_output_root();
+    fs::create_dir_all(&working_root).expect("working root should be creatable");
+    let cue_path = working_root.join("disc.cue");
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
+
+    let (code, out) = run_capture_in_dir_with_env(
+        &rust_bin,
+        &working_root,
+        &["-o", "flac", "-d", &cue_path_s, "-L", "cwd-log"],
+        &[],
+    );
+
+    assert_eq!(code, 0, "full-rip run should succeed: {out}");
+    let expected_log = working_root.join("Runtime Album [FLAC]/cwd-log.log");
+    assert!(
+        expected_log.exists(),
+        "expected log file in cwd output root: {}",
+        expected_log.display()
+    );
+
+    let _ = fs::remove_file(&cue_path);
+    let cleanup = fs::remove_dir_all(&working_root);
+    assert!(cleanup.is_ok(), "cwd log output root should be removable after run");
+}
+
+#[test]
+fn run_mode_cue_scheme_uses_cli_output_root() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let output_root = unique_temp_output_root();
+    let output_root_s = output_root.to_string_lossy().to_string();
+    let cue_path = unique_temp_cue_path();
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
+
+    let (code, out) = run_capture(
+        &rust_bin,
+        &[
+            "-o",
+            "flac",
+            "-d",
+            &cue_path_s,
+            "--output-root",
+            &output_root_s,
+            "-M",
+            "sheet",
+        ],
+    );
+
+    assert_eq!(code, 0, "full-rip run should succeed: {out}");
+    let expected_cue = output_root.join("Runtime Album [FLAC]/sheet.cue");
+    assert!(
+        expected_cue.exists(),
+        "expected cue file in CLI output root: {}",
+        expected_cue.display()
+    );
+
+    let _ = fs::remove_file(&cue_path);
+    let cleanup = fs::remove_dir_all(&output_root);
+    assert!(cleanup.is_ok(), "CLI cue output root should be removable after run");
+}
+
+#[test]
+fn run_mode_cue_scheme_uses_env_output_root_when_cli_unset() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let output_root = unique_temp_output_root();
+    let output_root_s = output_root.to_string_lossy().to_string();
+    let cue_path = unique_temp_cue_path();
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
+
+    let (code, out) = run_capture_with_env(
+        &rust_bin,
+        &["-o", "flac", "-d", &cue_path_s, "-M", "env-sheet"],
+        &[("CYANRIP_RS_OUTPUT_ROOT", &output_root_s)],
+    );
+
+    assert_eq!(code, 0, "full-rip run should succeed: {out}");
+    let expected_cue = output_root.join("Runtime Album [FLAC]/env-sheet.cue");
+    assert!(
+        expected_cue.exists(),
+        "expected cue file in env output root: {}",
+        expected_cue.display()
+    );
+
+    let _ = fs::remove_file(&cue_path);
+    let cleanup = fs::remove_dir_all(&output_root);
+    assert!(cleanup.is_ok(), "env cue output root should be removable after run");
+}
+
+#[test]
+fn run_mode_cue_scheme_defaults_to_working_directory_output_root() {
+    let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
+    let working_root = unique_temp_output_root();
+    fs::create_dir_all(&working_root).expect("working root should be creatable");
+    let cue_path = working_root.join("disc.cue");
+    fs::write(&cue_path, "FILE \"disc.bin\" BINARY\n").expect("cue fixture should be writable");
+    let cue_path_s = cue_path.to_string_lossy().to_string();
+
+    let (code, out) = run_capture_in_dir_with_env(
+        &rust_bin,
+        &working_root,
+        &["-o", "flac", "-d", &cue_path_s, "-M", "cwd-sheet"],
+        &[],
+    );
+
+    assert_eq!(code, 0, "full-rip run should succeed: {out}");
+    let expected_cue = working_root.join("Runtime Album [FLAC]/cwd-sheet.cue");
+    assert!(
+        expected_cue.exists(),
+        "expected cue file in cwd output root: {}",
+        expected_cue.display()
+    );
+
+    let _ = fs::remove_file(&cue_path);
+    let cleanup = fs::remove_dir_all(&working_root);
+    assert!(cleanup.is_ok(), "cwd cue output root should be removable after run");
 }
 
 #[test]
