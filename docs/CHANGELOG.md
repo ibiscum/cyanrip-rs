@@ -2,6 +2,31 @@
 
 Milestone status vocabulary in headings follows: complete, in progress, planned, deferred.
 
+## 2026-08-28
+
+### Documentation: `-M/--cue-scheme` Option Flow
+- Added [CUE_SCHEME_OPTION_FLOW.md](cue-scheme_option_flow.md), documenting purpose, path-resolution flow, output-root precedence, and current implementation status for `-M/--cue-scheme`.
+- Linked the new cue-scheme option-flow document from [README.md](README.md) in this docs directory.
+
+### Documentation: `-l/--tracks` Option Flow
+- Added [TRACKS_OPTION_FLOW.md](tracks_option_flow.md), documenting purpose, parse/normalization flow, runtime track-selection behavior, and current implementation status for `-l/--tracks`.
+
+## 2026-08-27
+
+### Runtime: `-K/--no-replaygain` Behavior
+- Implemented FLAC ReplayGain tag emission in [../src/app.rs](../src/app.rs) for the active writer flow (track and album ReplayGain Vorbis fields).
+- Wired `-K/--no-replaygain` to disable ReplayGain tag generation in that runtime path while keeping normal FLAC metadata embedding intact.
+- Added integration coverage in [../tests/app_cli_integration.rs](../tests/app_cli_integration.rs) to assert ReplayGain tags are present by default and absent with `-K`.
+
+### Documentation: `-W/--no-deemphasis` Option Flow
+- Added [NO_DEEMPHASIS_OPTION_FLOW.md](no-deemphasis_option_flow.md), documenting `-W/--no-deemphasis` purpose, CLI/settings mapping, automatic deemphasis disable semantics, and option interactions.
+- Linked the new no-deemphasis option-flow document from [README.md](README.md) in this docs directory.
+
+### Documentation: `-H/--hdcd` Option Flow and Parity Status
+- Added [HDCD_OPTION_FLOW.md](hdcd_option_flow.md), documenting `-H/--hdcd` purpose, parse/settings mapping, processing precedence, ffmpeg backend flow, and 24-bit WAV/FLAC output behavior.
+- Linked the new HDCD option-flow document from [README.md](README.md) in this docs directory.
+- Updated [../PARITY_MATRIX.md](../PARITY_MATRIX.md) to mark HDCD/deemphasis option handling as `Complete` (implemented ffmpeg HDCD path with 24-bit propagation for WAV/FLAC) and adjusted the current-gap summary accordingly.
+
 ## 2026-08-26
 
 ### Documentation: `-a/--album-meta` Option Flow
@@ -10,9 +35,9 @@ Milestone status vocabulary in headings follows: complete, in progress, planned,
 
 ## 2026-08-25
 
-### `-B/--outputroot` Help and Option-Flow Documentation
-- Clarified CLI `-h` help text for [../src/cli.rs](../src/cli.rs): `-B/--outputroot` now explicitly states it overrides `CYANRIP_RS_OUTPUT_ROOT`.
-- Added help-output regression coverage in [../src/cli.rs](../src/cli.rs) to lock the new `-B/--outputroot` description.
+### `-B/--output-root` Help and Option-Flow Documentation
+- Clarified CLI `-h` help text for [../src/cli.rs](../src/cli.rs): `-B/--output-root` now explicitly states it overrides `CYANRIP_RS_OUTPUT_ROOT`.
+- Added help-output regression coverage in [../src/cli.rs](../src/cli.rs) to lock the new `-B/--output-root` description.
 - Updated CLI behavior freeze defaults and precedence notes in [../CLI_BEHAVIOR_FREEZE.md](../CLI_BEHAVIOR_FREEZE.md) to include `output_root` and output-root resolution order.
 - Added dedicated option-flow documentation in [OUTPUTROOT_OPTION_FLOW.md](OUTPUTROOT_OPTION_FLOW.md), including precedence rules, behavior notes, and usage examples.
 - Linked the new flow document from [README.md](README.md) in this docs directory.

@@ -2,8 +2,8 @@ use clap::{CommandFactory, Parser};
 
 use crate::{
     MAX_PARANOIA_LEVEL, Settings, apply_pregap_entries,
-    calc_over_under_read_frames, parse_cover_size, parse_disc, parse_outputs, parse_paranoia,
-    parse_release, parse_sanitize, parse_track_indices, validate_folder_scheme,
+    calc_over_under_read_frames, parse_cover_size, parse_cover_specs, parse_disc, parse_outputs,
+    parse_paranoia, parse_release, parse_sanitize, parse_track_indices, validate_folder_scheme,
     validate_mode_combo,
 };
 
@@ -160,7 +160,8 @@ pub struct CliArgs {
 
     #[arg(
         short = 'B',
-        long = "outputroot",
+        long = "output-root",
+        alias = "outputroot",
         help_heading = "Output options",
         help = "Base output directory for ripped files (overrides CYANRIP_RS_OUTPUT_ROOT)"
     )]
@@ -488,6 +489,8 @@ impl CliArgs {
             settings.totaldiscs = totaldiscs;
         }
 
+        parse_cover_specs(&settings.cover_specs)?;
+
         Ok(CliConfig {
             settings,
             action,
@@ -605,8 +608,8 @@ mod tests {
     }
 
     #[test]
-    fn maps_outputroot_to_settings() {
-        let cfg = parse_from_iter(["cyanrip-rs", "-B", "/tmp/cyanrip-out"]).unwrap();
+    fn maps_output_root_to_settings() {
+        let cfg = parse_from_iter(["cyanrip-rs", "--output-root", "/tmp/cyanrip-out"]).unwrap();
         assert_eq!(
             cfg.settings.output_root.as_deref(),
             Some("/tmp/cyanrip-out")
@@ -825,6 +828,40 @@ mod tests {
     fn rejects_invalid_disc_with_exact_message() {
         let err = parse_from_iter(["cyanrip-rs", "-c", "3/2"]).unwrap_err();
         assert_eq!(err, "discnumber 3 is larger than totaldiscs 2");
+    }
+
+    #[test]
+    fn rejects_invalid_cover_track_index_with_exact_message() {
+        let err = parse_from_iter(["cyanrip-rs", "-C", "0=front.jpg"]).unwrap_err();
+        assert_eq!(err, "Invalid track idx for cover art: 0");
+    }
+
+    #[test]
+    fn rejects_duplicate_cover_track_index_with_exact_message() {
+        let err = parse_from_iter([
+            "cyanrip-rs",
+            "-C",
+            "1=track1-a.jpg",
+            "-C",
+            "1=track1-b.jpg",
+        ])
+        .unwrap_err();
+        assert_eq!(err, "Cover art already specified for track idx 1!");
+    }
+
+    #[test]
+    fn rejects_third_unkeyed_cover_with_exact_message() {
+        let err = parse_from_iter([
+            "cyanrip-rs",
+            "-C",
+            "front.jpg",
+            "-C",
+            "back.jpg",
+            "-C",
+            "extra.jpg",
+        ])
+        .unwrap_err();
+        assert_eq!(err, "No cover art location specified for \"extra.jpg\"");
     }
 
     #[test]

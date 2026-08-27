@@ -85,6 +85,18 @@ pub enum CoverArtLookupSize {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoverSpecTarget {
+    Album(String),
+    Track(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoverSpec {
+    pub target: CoverSpecTarget,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReleaseSelection {
     Index(i32),
     Id(String),
@@ -357,6 +369,80 @@ pub fn parse_outputs(entries: &[&str]) -> Result<Vec<OutputFormat>, String> {
     Ok(outputs)
 }
 
+pub fn parse_cover_specs(entries: &[String]) -> Result<Vec<CoverSpec>, String> {
+    if entries.len() > MAX_OUTPUTS {
+        return Err("Too many cover arts specified!".to_string());
+    }
+
+    let mut out = Vec::new();
+    let mut album_titles: Vec<String> = Vec::new();
+    let mut track_indices: Vec<u32> = Vec::new();
+
+    for raw in entries {
+        let entry = raw.trim();
+        if entry.is_empty() {
+            return Err(format!("No cover art location specified for \"{}\"", raw));
+        }
+
+        if let Some((lhs, rhs)) = entry.split_once('=') {
+            let key = lhs.trim();
+            let source = rhs.trim();
+
+            if source.is_empty() {
+                return Err(format!("No cover art location specified for \"{}\"", raw));
+            }
+
+            if let Ok(track_idx) = key.parse::<u32>() {
+                if track_idx == 0 || track_idx > MAX_TRACKS as u32 {
+                    return Err(format!("Invalid track idx for cover art: {track_idx}"));
+                }
+                if track_indices.contains(&track_idx) {
+                    return Err(format!("Cover art already specified for track idx {track_idx}!"));
+                }
+
+                track_indices.push(track_idx);
+                out.push(CoverSpec {
+                    target: CoverSpecTarget::Track(track_idx),
+                    source: source.to_string(),
+                });
+                continue;
+            }
+
+            if key.is_empty() {
+                return Err(format!("No cover art location specified for \"{}\"", raw));
+            }
+            if album_titles.iter().any(|title| title == key) {
+                return Err(format!("Cover art \"{}\" already specified!", key));
+            }
+
+            album_titles.push(key.to_string());
+            out.push(CoverSpec {
+                target: CoverSpecTarget::Album(key.to_string()),
+                source: source.to_string(),
+            });
+            continue;
+        }
+
+        let have_front = album_titles.iter().any(|existing| existing == "Front");
+        let have_back = album_titles.iter().any(|existing| existing == "Back");
+        let title = if !have_front {
+            "Front"
+        } else if !have_back {
+            "Back"
+        } else {
+            return Err(format!("No cover art location specified for \"{}\"", entry));
+        };
+
+        album_titles.push(title.to_string());
+        out.push(CoverSpec {
+            target: CoverSpecTarget::Album(title.to_string()),
+            source: entry.to_string(),
+        });
+    }
+
+    Ok(out)
+}
+
 pub fn parse_track_indices(indices: &[i32]) -> Result<Vec<i32>, String> {
     let mut out = Vec::new();
     for idx in indices.iter().copied() {
@@ -571,5 +657,61 @@ mod tests {
         assert!(validate_mode_combo(true, true, false).is_err());
         assert!(validate_mode_combo(true, false, true).is_err());
         assert!(validate_mode_combo(false, true, true).is_err());
+    }
+
+    #[test]
+    fn cover_specs_parse_album_track_and_implicit_front_back() {
+        let parsed = parse_cover_specs(&[
+            "Front=/tmp/front.jpg".to_string(),
+            "2=/tmp/track2.png".to_string(),
+            "https://example.com/back.jpg".to_string(),
+        ])
+        .expect("cover specs should parse");
+
+        assert_eq!(
+            parsed,
+            vec![
+                CoverSpec {
+                    target: CoverSpecTarget::Album("Front".to_string()),
+                    source: "/tmp/front.jpg".to_string(),
+                },
+                CoverSpec {
+                    target: CoverSpecTarget::Track(2),
+                    source: "/tmp/track2.png".to_string(),
+                },
+                CoverSpec {
+                    target: CoverSpecTarget::Album("Back".to_string()),
+                    source: "https://example.com/back.jpg".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn cover_specs_reject_invalid_track_index_and_duplicates() {
+        let err = parse_cover_specs(&["0=/tmp/x.jpg".to_string()]).expect_err("must fail");
+        assert_eq!(err, "Invalid track idx for cover art: 0");
+
+        let err = parse_cover_specs(&["1=/tmp/a.jpg".to_string(), "1=/tmp/b.jpg".to_string()])
+            .expect_err("must fail");
+        assert_eq!(err, "Cover art already specified for track idx 1!");
+
+        let err = parse_cover_specs(&[
+            "Front=/tmp/a.jpg".to_string(),
+            "Front=/tmp/b.jpg".to_string(),
+        ])
+        .expect_err("must fail");
+        assert_eq!(err, "Cover art \"Front\" already specified!");
+    }
+
+    #[test]
+    fn cover_specs_reject_third_unkeyed_entry() {
+        let err = parse_cover_specs(&[
+            "/tmp/front.jpg".to_string(),
+            "/tmp/back.jpg".to_string(),
+            "/tmp/extra.jpg".to_string(),
+        ])
+        .expect_err("must fail");
+        assert_eq!(err, "No cover art location specified for \"/tmp/extra.jpg\"");
     }
 }

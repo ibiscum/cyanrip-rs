@@ -127,6 +127,10 @@ fn first_vorbis_value(tag: &metaflac::Tag, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn has_vorbis_key(tag: &metaflac::Tag, key: &str) -> bool {
+    tag.get_vorbis(key).is_some()
+}
+
 #[tokio::test]
 async fn cli_disable_flags_propagate_to_metadata_orchestration() {
     let cfg = parse_from_iter(["cyanrip-rs", "-N", "-A", "-o", "wav,flac"])
@@ -225,6 +229,68 @@ fn cli_outputs_and_disc_tags_drive_writer_dispatch_and_flac_tags() {
     assert_eq!(first_vorbis_value(&tag, "TRACKNUMBER").as_deref(), Some("01"));
     assert_eq!(first_vorbis_value(&tag, "DISCNUMBER").as_deref(), Some("1"));
     assert_eq!(first_vorbis_value(&tag, "DISCTOTAL").as_deref(), Some("2"));
+    assert!(has_vorbis_key(&tag, "REPLAYGAIN_TRACK_GAIN"));
+    assert!(has_vorbis_key(&tag, "REPLAYGAIN_TRACK_PEAK"));
+    assert!(has_vorbis_key(&tag, "REPLAYGAIN_ALBUM_GAIN"));
+    assert!(has_vorbis_key(&tag, "REPLAYGAIN_ALBUM_PEAK"));
+
+    let cleanup = std::fs::remove_dir_all(&output_root);
+    assert!(cleanup.is_ok(), "temporary output root should be removable");
+}
+
+#[test]
+fn cli_no_replaygain_disables_replaygain_flac_tags() {
+    let cfg = parse_from_iter([
+        "cyanrip-rs",
+        "-K",
+        "-o",
+        "flac",
+        "-c",
+        "1/1",
+        "-D",
+        "{album} [{format}]",
+        "-F",
+        "{track} - {title}",
+    ])
+    .expect("cli parse should succeed");
+
+    let output_root = unique_temp_output_root();
+    let album_meta: HashMap<String, String> = [
+        ("album".to_string(), "Example Album".to_string()),
+        ("album_artist".to_string(), "Example Artist".to_string()),
+    ]
+    .into_iter()
+    .collect();
+
+    let tracks = vec![TrackOutputInput {
+        track_number: 1,
+        track_meta: [
+            ("track".to_string(), "01".to_string()),
+            ("title".to_string(), "Intro".to_string()),
+            ("artist".to_string(), "Track Artist".to_string()),
+        ]
+        .into_iter()
+        .collect(),
+        pcm: sample_pcm(),
+    }];
+
+    let out = write_track_outputs(TrackOutputFlowInput {
+        settings: cfg.settings,
+        output_root: output_root.clone(),
+        album_meta,
+        tracks,
+    })
+    .expect("writer dispatch should succeed");
+
+    assert_eq!(out.written_files.len(), 1);
+    let flac = output_root.join("Example Album [FLAC]/01 - Intro.flac");
+    assert!(flac.exists());
+
+    let tag = metaflac::Tag::read_from_path(&flac).expect("flac tag read should work");
+    assert!(!has_vorbis_key(&tag, "REPLAYGAIN_TRACK_GAIN"));
+    assert!(!has_vorbis_key(&tag, "REPLAYGAIN_TRACK_PEAK"));
+    assert!(!has_vorbis_key(&tag, "REPLAYGAIN_ALBUM_GAIN"));
+    assert!(!has_vorbis_key(&tag, "REPLAYGAIN_ALBUM_PEAK"));
 
     let cleanup = std::fs::remove_dir_all(&output_root);
     assert!(cleanup.is_ok(), "temporary output root should be removable");

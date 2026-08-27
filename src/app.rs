@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::audio::flac::write_flac_file;
 use crate::audio::process::{TrackProcessingOptions, process_track_pcm};
 use crate::audio::wav::write_wav_file;
-use crate::audio::{PcmSpec, PcmTrackData};
+use crate::audio::{PcmSpec, PcmTrackData, ProcessedPcmTrackData};
 use crate::cdda::paranoia::{RetryPolicy, RipState};
 #[cfg(all(target_os = "linux", feature = "cdda"))]
 use crate::cdda::paranoia::RipEvent;
@@ -23,7 +23,9 @@ use crate::cue::{CueDoc, CueFileType, CueTrack, render_cue};
 use crate::metadata::accurip::{
     AccuDbStatus, AccuRipError, AccuRipLookupResult, AccuRipService, AccuRipTrackInput,
 };
-use crate::metadata::coverart::{CoverArtError, CoverArtImage, CoverArtService};
+use crate::metadata::coverart::{
+    CoverArtError, CoverArtImage, CoverArtService, string_is_url,
+};
 use crate::metadata::discid::{DiscTrack, DiscidInfo, compute_discid};
 use crate::metadata::musicbrainz::{
     MusicBrainzError, MusicBrainzReleaseMeta, MusicBrainzService,
@@ -33,10 +35,13 @@ use crate::metadata::musicbrainz::ReleaseSummary;
 #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
 use crate::metadata::musicbrainz::ReqwestMusicBrainzHttpClient;
 use crate::naming::{
-    NamingContext, build_track_relative_path,
+    NamingContext, build_cover_relative_path, build_log_relative_path, build_track_relative_path,
     detect_track_path_collisions, resolve_output_path,
 };
-use crate::{DriverKind, OutputFormat, ReleaseSelection, Settings, open_dev_kind};
+use crate::{
+    CoverSpecTarget, DriverKind, OutputFormat, ReleaseSelection, Settings, open_dev_kind,
+    parse_cover_specs,
+};
 
 const DEFAULT_SYNTHETIC_FRAME_COUNT: usize = 32;
 #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
@@ -935,6 +940,56 @@ fn track_directive_text(fields: &BTreeMap<String, String>, key: &str) -> Option<
         .map(ToString::to_string)
 }
 
+fn infer_cover_extension_from_source(source: &str) -> Option<String> {
+    let clean = source
+        .split_once('?')
+        .map(|(left, _)| left)
+        .unwrap_or(source);
+
+    Path::new(clean)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.trim().to_ascii_lowercase())
+        .filter(|e| !e.is_empty())
+}
+
+fn initial_cover_arts_from_settings(
+    settings: &Settings,
+    info_only: bool,
+) -> Result<Vec<CoverArtImage>, RunWorkflowError> {
+    let parsed = parse_cover_specs(&settings.cover_specs).map_err(RunWorkflowError::Runtime)?;
+    let mut out = Vec::new();
+
+    for spec in parsed {
+        let CoverSpecTarget::Album(title) = spec.target else {
+            continue;
+        };
+
+        let source_url = spec.source;
+        let is_url = string_is_url(&source_url);
+        let data = if info_only || is_url {
+            None
+        } else {
+            Some(fs::read(&source_url).map_err(|e| {
+                RunWorkflowError::Runtime(format!(
+                    "failed to read cover art source {source_url}: {e}"
+                ))
+            })?)
+        };
+
+        out.push(CoverArtImage {
+            title,
+            source: Some("CLI".to_string()),
+            source_url: source_url.clone(),
+            extension: infer_cover_extension_from_source(&source_url),
+            data,
+            content_type: None,
+        });
+    }
+
+    Ok(out)
+}
+
 fn default_media_value(settings: &Settings) -> &'static str {
     if settings.decode_hdcd {
         "HDCD"
@@ -1685,6 +1740,7 @@ fn synthetic_track_pcm_for_source() -> Result<PcmTrackData, RunWorkflowError> {
 
 fn render_synthetic_full_rip(settings: &Settings) -> Result<String, RunWorkflowError> {
     let output_root = configured_output_root(settings);
+    let cli_cover_arts = initial_cover_arts_from_settings(settings, false)?;
 
     let mut album_meta: HashMap<String, String> = parse_album_metadata_map(settings.album_metadata.as_deref())
         .into_iter()
@@ -1726,7 +1782,7 @@ fn render_synthetic_full_rip(settings: &Settings) -> Result<String, RunWorkflowE
         .map_err(|e| RunWorkflowError::Runtime(format!("synthetic full-rip failed: {e}")))?;
 
     let mut written_files = Vec::new();
-    for (track_number, track_meta) in track_plan {
+    for (track_number, track_meta) in &track_plan {
         let pcm = synthetic_track_pcm_for_source()?;
         let result = write_track_outputs_with_naming_tracks(
             TrackOutputFlowInput {
@@ -1734,8 +1790,8 @@ fn render_synthetic_full_rip(settings: &Settings) -> Result<String, RunWorkflowE
                 output_root: output_root.clone(),
                 album_meta: album_meta.clone(),
                 tracks: vec![TrackOutputInput {
-                    track_number,
-                    track_meta,
+                    track_number: *track_number,
+                    track_meta: track_meta.clone(),
                     pcm,
                 }],
             },
@@ -1754,7 +1810,266 @@ fn render_synthetic_full_rip(settings: &Settings) -> Result<String, RunWorkflowE
     for file in &written_files {
         out.push_str(&format!("FILE {}\n", file.absolute_path.display()));
     }
+
+    write_runtime_log_files(
+        settings,
+        &output_root,
+        &album_meta,
+        naming_track_count,
+        &out,
+    )?;
+
+    let synthetic_track_meta_map: HashMap<u32, HashMap<String, String>> = track_plan
+        .into_iter()
+        .collect();
+    write_runtime_cue_files(
+        settings,
+        &output_root,
+        &album_meta,
+        naming_track_count,
+        &written_files,
+        &synthetic_track_meta_map,
+    )?;
+
+    write_runtime_cover_files(
+        settings,
+        &output_root,
+        &album_meta,
+        naming_track_count,
+        &cli_cover_arts,
+    )?;
+
     Ok(out)
+}
+
+fn write_runtime_log_files(
+    settings: &Settings,
+    output_root: &Path,
+    album_meta: &HashMap<String, String>,
+    naming_track_count: usize,
+    content: &str,
+) -> Result<(), RunWorkflowError> {
+    let naming_ctx = NamingContext {
+        sanitize_method: settings.sanitize_method,
+        nb_tracks: naming_track_count.max(1),
+    };
+
+    for fmt_kind in &settings.outputs {
+        let (format_suffix, _extension) = output_format_descriptor(*fmt_kind)
+            .ok_or(RunWorkflowError::UnsupportedOutputFormat(*fmt_kind))?;
+
+        let relative_path = build_log_relative_path(
+            &naming_ctx,
+            album_meta,
+            &settings.folder_name_scheme,
+            &settings.log_name_scheme,
+            format_suffix,
+        )
+        .map_err(|e| {
+            RunWorkflowError::Runtime(format!("failed to resolve log output path for {fmt_kind:?}: {e}"))
+        })?;
+
+        let absolute_path = resolve_output_path(output_root, &relative_path, true)
+            .map_err(|e| {
+                RunWorkflowError::Runtime(format!(
+                    "failed to resolve log output path {}: {e}",
+                    output_root.join(&relative_path).display()
+                ))
+            })?;
+
+        fs::write(&absolute_path, content).map_err(|e| {
+            RunWorkflowError::Runtime(format!(
+                "failed to write log file {}: {e}",
+                absolute_path.display()
+            ))
+        })?;
+    }
+
+    Ok(())
+}
+
+fn cue_doc_meta_from_album_meta(album_meta: &HashMap<String, String>) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for (key, value) in album_meta {
+        if value.trim().is_empty() {
+            continue;
+        }
+        out.insert(key.clone(), value.clone());
+    }
+    out
+}
+
+fn cue_track_from_written_file(
+    file: &TrackOutputFile,
+    cue_relative_path: &str,
+    track_meta: &HashMap<String, String>,
+) -> CueTrack {
+    CueTrack {
+        number: file.track_number,
+        index: file.track_number,
+        is_data: false,
+        preemphasis: track_has_preemphasis(track_meta),
+        file_path: file.relative_path.to_string_lossy().to_string(),
+        cue_path: Some(cue_relative_path.to_string()),
+        file_type: CueFileType::Wave,
+        title: track_meta.get("title").cloned(),
+        performer: track_meta.get("artist").cloned(),
+        songwriter: None,
+        composer: None,
+        arranger: None,
+        isrc: None,
+        pregap_lsn: None,
+        start_lsn: 0,
+        start_lsn_sig: 0,
+        dropped_pregap_start: None,
+        merged_pregap_end: None,
+        previous_start_lsn_sig: None,
+        postgap_frames: None,
+        flag_dcp: false,
+        flag_4ch: false,
+        flag_scms: false,
+    }
+}
+
+fn write_runtime_cue_files(
+    settings: &Settings,
+    output_root: &Path,
+    album_meta: &HashMap<String, String>,
+    naming_track_count: usize,
+    written_files: &[TrackOutputFile],
+    track_meta_map: &HashMap<u32, HashMap<String, String>>,
+) -> Result<(), RunWorkflowError> {
+    let naming_ctx = NamingContext {
+        sanitize_method: settings.sanitize_method,
+        nb_tracks: naming_track_count.max(1),
+    };
+
+    for fmt_kind in &settings.outputs {
+        let (format_suffix, _extension) = output_format_descriptor(*fmt_kind)
+            .ok_or(RunWorkflowError::UnsupportedOutputFormat(*fmt_kind))?;
+
+        let cue_relative_path = crate::naming::build_cue_relative_path(
+            &naming_ctx,
+            album_meta,
+            &settings.folder_name_scheme,
+            &settings.cue_name_scheme,
+            format_suffix,
+        )
+        .map_err(|e| {
+            RunWorkflowError::Runtime(format!("failed to resolve cue output path for {fmt_kind:?}: {e}"))
+        })?;
+
+        let cue_absolute_path = resolve_output_path(output_root, &cue_relative_path, true).map_err(|e| {
+            RunWorkflowError::Runtime(format!(
+                "failed to resolve cue output path {}: {e}",
+                output_root.join(&cue_relative_path).display()
+            ))
+        })?;
+
+        let mut tracks_for_format: Vec<&TrackOutputFile> = written_files
+            .iter()
+            .filter(|f| f.output_format == *fmt_kind)
+            .collect();
+        tracks_for_format.sort_by_key(|f| f.track_number);
+
+        if tracks_for_format.is_empty() {
+            continue;
+        }
+
+        let cue_tracks: Vec<CueTrack> = tracks_for_format
+            .into_iter()
+            .map(|file| {
+                let track_meta = track_meta_map
+                    .get(&file.track_number)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        let mut fallback = HashMap::new();
+                        fallback.insert("track".to_string(), format!("{:02}", file.track_number));
+                        fallback.insert("title".to_string(), format!("Track {:02}", file.track_number));
+                        fallback
+                    });
+                cue_track_from_written_file(file, &cue_relative_path, &track_meta)
+            })
+            .collect();
+
+        let cue_doc = CueDoc {
+            meta: cue_doc_meta_from_album_meta(album_meta),
+            tracks: cue_tracks,
+            deemphasis: settings.deemphasis,
+            force_deemphasis: settings.force_deemphasis,
+        };
+        let cue_text = render_cue(&cue_doc);
+
+        fs::write(&cue_absolute_path, cue_text).map_err(|e| {
+            RunWorkflowError::Runtime(format!(
+                "failed to write cue file {}: {e}",
+                cue_absolute_path.display()
+            ))
+        })?;
+    }
+
+    Ok(())
+}
+
+fn write_runtime_cover_files(
+    settings: &Settings,
+    output_root: &Path,
+    album_meta: &HashMap<String, String>,
+    naming_track_count: usize,
+    cover_arts: &[CoverArtImage],
+) -> Result<(), RunWorkflowError> {
+    if cover_arts.is_empty() {
+        return Ok(());
+    }
+
+    let naming_ctx = NamingContext {
+        sanitize_method: settings.sanitize_method,
+        nb_tracks: naming_track_count.max(1),
+    };
+
+    for fmt_kind in &settings.outputs {
+        let (format_suffix, _extension) = output_format_descriptor(*fmt_kind)
+            .ok_or(RunWorkflowError::UnsupportedOutputFormat(*fmt_kind))?;
+
+        for art in cover_arts {
+            if !art.title.eq_ignore_ascii_case("front") && !art.title.eq_ignore_ascii_case("back") {
+                continue;
+            }
+            let Some(data) = art.data.as_ref() else {
+                continue;
+            };
+
+            let relative_path = build_cover_relative_path(
+                &naming_ctx,
+                album_meta,
+                &settings.folder_name_scheme,
+                format_suffix,
+                &art.title,
+                art.extension.as_deref(),
+            )
+            .map_err(|e| {
+                RunWorkflowError::Runtime(format!(
+                    "failed to resolve cover output path for {fmt_kind:?}: {e}"
+                ))
+            })?;
+
+            let absolute_path = resolve_output_path(output_root, &relative_path, true).map_err(|e| {
+                RunWorkflowError::Runtime(format!(
+                    "failed to resolve cover output path {}: {e}",
+                    output_root.join(&relative_path).display()
+                ))
+            })?;
+
+            fs::write(&absolute_path, data).map_err(|e| {
+                RunWorkflowError::Runtime(format!(
+                    "failed to write cover file {}: {e}",
+                    absolute_path.display()
+                ))
+            })?;
+        }
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1964,11 +2279,132 @@ fn resolve_requested_audio_tracks(
 }
 
 fn apply_offset_frame_adjustment(boundary: TrackBoundary, settings: &Settings) -> TrackBoundary {
-    let delta = settings.over_under_read_frames.unsigned_abs() as usize;
-    TrackBoundary {
-        frame_count: boundary.frame_count.saturating_add(delta),
-        ..boundary
+    // Mirror upstream coarse frame shifting used by setup_track_lsn.
+    let mut first_frame = boundary.start_lsn;
+    let mut last_frame = boundary
+        .start_lsn
+        .saturating_add(boundary.frame_count.saturating_sub(1) as i32);
+    let extra_frames = settings.over_under_read_frames;
+    let sign: i32 = if extra_frames < 0 {
+        -1
+    } else if extra_frames > 0 {
+        1
+    } else {
+        0
+    };
+
+    let shift = (extra_frames.unsigned_abs() as i32).saturating_sub(1).max(0);
+    first_frame = first_frame.saturating_add(sign.saturating_mul(shift));
+    last_frame = last_frame.saturating_add(sign.saturating_mul(shift));
+
+    if sign < 0 {
+        first_frame = first_frame.saturating_sub(1);
     }
+    if sign > 0 {
+        last_frame = last_frame.saturating_add(1);
+    }
+
+    let frame_count = if last_frame >= first_frame {
+        last_frame.saturating_sub(first_frame).saturating_add(1) as usize
+    } else {
+        0
+    };
+
+    TrackBoundary {
+        track_number: boundary.track_number,
+        start_lsn: first_frame,
+        frame_count,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TrackReadPlan {
+    track_number: u32,
+    start_lsn: i32,
+    frame_count: usize,
+    read_start_lsn: i32,
+    read_frame_count: usize,
+    silence_before_frames: usize,
+    silence_after_frames: usize,
+}
+
+fn plan_track_read(
+    boundary: TrackBoundary,
+    settings: &Settings,
+    disc_start_lsn: i32,
+    disc_end_lsn: i32,
+) -> TrackReadPlan {
+    let adjusted = apply_offset_frame_adjustment(boundary, settings);
+    let mut first = adjusted.start_lsn;
+    let mut last = adjusted
+        .start_lsn
+        .saturating_add(adjusted.frame_count.saturating_sub(1) as i32);
+
+    let (silence_before_frames, silence_after_frames) = if settings.overread_leadinout {
+        (0usize, 0usize)
+    } else {
+        let before = disc_start_lsn.saturating_sub(first).max(0) as usize;
+        let after = last.saturating_sub(disc_end_lsn).max(0) as usize;
+        first = first.saturating_add(before as i32);
+        last = last.saturating_sub(after as i32);
+        (before, after)
+    };
+
+    let read_frame_count = if last >= first {
+        last.saturating_sub(first).saturating_add(1) as usize
+    } else {
+        0
+    };
+    let frame_count = read_frame_count
+        .saturating_add(silence_before_frames)
+        .saturating_add(silence_after_frames);
+
+    TrackReadPlan {
+        track_number: adjusted.track_number,
+        start_lsn: adjusted.start_lsn,
+        frame_count,
+        read_start_lsn: first,
+        read_frame_count,
+        silence_before_frames,
+        silence_after_frames,
+    }
+}
+
+fn build_track_read_plans(
+    settings: &Settings,
+    boundaries: &[TrackBoundary],
+    disc_start_lsn: i32,
+    disc_end_lsn: i32,
+) -> Vec<TrackReadPlan> {
+    boundaries
+        .iter()
+        .copied()
+        .map(|b| plan_track_read(b, settings, disc_start_lsn, disc_end_lsn))
+        .collect()
+}
+
+fn add_silence_padding(
+    mut pcm: PcmTrackData,
+    silence_before_frames: usize,
+    silence_after_frames: usize,
+) -> PcmTrackData {
+    let samples_per_frame = CDDA_FRAME_BYTES / std::mem::size_of::<i16>();
+    let before_samples = silence_before_frames.saturating_mul(samples_per_frame);
+    let after_samples = silence_after_frames.saturating_mul(samples_per_frame);
+    if before_samples == 0 && after_samples == 0 {
+        return pcm;
+    }
+
+    let mut out = Vec::with_capacity(
+        before_samples
+            .saturating_add(pcm.interleaved_i16_samples.len())
+            .saturating_add(after_samples),
+    );
+    out.extend(std::iter::repeat_n(0i16, before_samples));
+    out.extend_from_slice(&pcm.interleaved_i16_samples);
+    out.extend(std::iter::repeat_n(0i16, after_samples));
+    pcm.interleaved_i16_samples = out;
+    pcm
 }
 
 #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
@@ -1989,7 +2425,7 @@ fn map_toc_preflight_error(err: &CddaReadError) -> RunWorkflowError {
 fn resolve_physical_track_boundaries(
     settings: &Settings,
     requested_track_numbers: &[u32],
-) -> Result<Vec<TrackBoundary>, RunWorkflowError> {
+) -> Result<(Vec<TrackBoundary>, i32, i32), RunWorkflowError> {
     use crate::cdda::linux_drive::read_drive_toc_tracks;
 
     let device_path = settings.dev_path.as_deref().or(Some("/dev/cdrom"));
@@ -2015,8 +2451,10 @@ fn resolve_physical_track_boundaries(
     }
 
     let mut boundaries = Vec::new();
+    let mut disc_end_lsn = 0i32;
     for track in &toc {
         let track_number = track.number as u32;
+        disc_end_lsn = disc_end_lsn.max(track.end_lsn);
         if track.track_is_data || !wanted.contains(&track_number) {
             continue;
         }
@@ -2040,14 +2478,14 @@ fn resolve_physical_track_boundaries(
         ));
     }
 
-    Ok(boundaries)
+    Ok((boundaries, 0, disc_end_lsn))
 }
 
 #[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
 fn resolve_physical_track_boundaries(
     _settings: &Settings,
     _requested_track_numbers: &[u32],
-) -> Result<Vec<TrackBoundary>, RunWorkflowError> {
+) -> Result<(Vec<TrackBoundary>, i32, i32), RunWorkflowError> {
     Err(RunWorkflowError::Runtime(
         "physical TOC resolution requires linux + cdda + backend-libcdio-sys".to_string(),
     ))
@@ -2083,6 +2521,20 @@ struct TrackBoundary {
     track_number: u32,
     start_lsn: i32,
     frame_count: usize,
+}
+
+fn image_disc_range_from_boundaries(boundaries: &[TrackBoundary]) -> (i32, i32) {
+    let start = boundaries.iter().map(|b| b.start_lsn.max(0)).min().unwrap_or(0);
+    let end = boundaries
+        .iter()
+        .map(|b| {
+            b.start_lsn
+                .saturating_add(b.frame_count.saturating_sub(1) as i32)
+        })
+        .max()
+        .unwrap_or(0)
+        .max(start);
+    (start, end)
 }
 
 fn parse_i32_meta(map: &HashMap<String, String>, key: &str) -> Option<i32> {
@@ -2312,23 +2764,23 @@ fn resolve_track_boundaries(
 
 fn acquire_tracks_pcm_from_image_reader(
     settings: &Settings,
-    boundaries: &[TrackBoundary],
+    plans: &[TrackReadPlan],
 ) -> Result<Vec<(u32, PcmTrackData)>, RunWorkflowError> {
-    let max_frame_end = boundaries
+    let max_frame_end = plans
         .iter()
-        .map(|b| (b.start_lsn.max(0) as usize).saturating_add(b.frame_count))
+        .map(|b| (b.read_start_lsn.max(0) as usize).saturating_add(b.read_frame_count))
         .max()
         .unwrap_or(DEFAULT_SYNTHETIC_FRAME_COUNT);
     let total_frames = max_frame_end.max(DEFAULT_SYNTHETIC_FRAME_COUNT);
     let frames = build_synthetic_frames(total_frames);
     let mut reader = FaultInjectedImageReader::new(frames);
 
-    let mut out = Vec::with_capacity(boundaries.len());
-    for boundary in boundaries {
-        let start_lsn = boundary.start_lsn;
-        let frame_count = boundary.frame_count;
+    let mut out = Vec::with_capacity(plans.len());
+    for plan in plans {
+        let start_lsn = plan.read_start_lsn;
+        let frame_count = plan.read_frame_count;
 
-        if settings.paranoia_level > 0 {
+        if settings.paranoia_level > 0 && frame_count > 0 {
             let mut retry_policy = if settings.ripping_retries > 0 {
                 RetryPolicy::new(
                     settings.ripping_retries as u32,
@@ -2369,8 +2821,20 @@ fn acquire_tracks_pcm_from_image_reader(
             }
         }
 
-        let pcm = acquire_track_pcm_from_reader(&mut reader, start_lsn, frame_count)?;
-        out.push((boundary.track_number, pcm));
+        let pcm = if frame_count > 0 {
+            acquire_track_pcm_from_reader(&mut reader, start_lsn, frame_count)?
+        } else {
+            PcmTrackData {
+                spec: PcmSpec {
+                    channels: 2,
+                    sample_rate: 44_100,
+                    bits_per_sample: 16,
+                },
+                interleaved_i16_samples: Vec::new(),
+            }
+        };
+        let pcm = add_silence_padding(pcm, plan.silence_before_frames, plan.silence_after_frames);
+        out.push((plan.track_number, pcm));
     }
 
     Ok(out)
@@ -2378,20 +2842,32 @@ fn acquire_tracks_pcm_from_image_reader(
 
 fn acquire_tracks_pcm_from_physical_reader(
     settings: &Settings,
-    boundaries: &[TrackBoundary],
+    plans: &[TrackReadPlan],
 ) -> Result<Vec<(u32, PcmTrackData)>, RunWorkflowError> {
-    let mut out = Vec::with_capacity(boundaries.len());
-    for boundary in boundaries {
-        let start_lsn = boundary.start_lsn;
-        let frame_count = boundary.frame_count;
+    let mut out = Vec::with_capacity(plans.len());
+    for plan in plans {
+        let start_lsn = plan.read_start_lsn;
+        let frame_count = plan.read_frame_count;
 
-        let pcm = acquire_track_pcm_from_physical_reader(
-            settings,
-            frame_count,
-            start_lsn,
-            boundary.track_number,
-        )?;
-        out.push((boundary.track_number, pcm));
+        let pcm = if frame_count > 0 {
+            acquire_track_pcm_from_physical_reader(
+                settings,
+                frame_count,
+                start_lsn,
+                plan.track_number,
+            )?
+        } else {
+            PcmTrackData {
+                spec: PcmSpec {
+                    channels: 2,
+                    sample_rate: 44_100,
+                    bits_per_sample: 16,
+                },
+                interleaved_i16_samples: Vec::new(),
+            }
+        };
+        let pcm = add_silence_padding(pcm, plan.silence_before_frames, plan.silence_after_frames);
+        out.push((plan.track_number, pcm));
     }
     Ok(out)
 }
@@ -2401,6 +2877,7 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
     let requested_track_numbers = selected_track_numbers(settings);
     let default_frame_count = configured_frame_count();
     let track_meta_map = track_meta_map_from_settings(settings);
+    let cli_cover_arts = initial_cover_arts_from_settings(settings, false)?;
     #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
     let mut track_meta_map = track_meta_map;
     let image_toc_overrides = match source {
@@ -2414,28 +2891,27 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
         }
         FullRipSource::Physical => None,
     };
-    let boundaries = match source {
+    let (boundaries, disc_start_lsn, disc_end_lsn) = match source {
         FullRipSource::Image => {
             let image_track_numbers = if requested_track_numbers.is_empty() {
                 vec![1]
             } else {
                 requested_track_numbers.clone()
             };
-            resolve_track_boundaries(
+            let boundaries = resolve_track_boundaries(
                 &image_track_numbers,
                 &track_meta_map,
                 default_frame_count,
                 image_toc_overrides.as_ref(),
-            )
+            );
+            let (disc_start_lsn, disc_end_lsn) = image_disc_range_from_boundaries(&boundaries);
+            (boundaries, disc_start_lsn, disc_end_lsn)
         }
         FullRipSource::Physical => {
             resolve_physical_track_boundaries(settings, &requested_track_numbers)?
         }
     };
-    let boundaries: Vec<TrackBoundary> = boundaries
-        .into_iter()
-        .map(|b| apply_offset_frame_adjustment(b, settings))
-        .collect();
+    let read_plans = build_track_read_plans(settings, &boundaries, disc_start_lsn, disc_end_lsn);
 
     #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
     let mut metadata_flow: Option<MetadataFlowResult> = None;
@@ -2474,13 +2950,14 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
                     "cyanrip-rs/0.1",
                 );
                 let ar_service = AccuRipService::default();
+                let initial_cover_arts = initial_cover_arts_from_settings(settings, false)?;
 
                 let mf = runtime.block_on(orchestrate_metadata_flow(
                     MetadataFlowInput {
                         settings: settings.clone(),
                         tracks: app_tracks,
                         info_only: false,
-                        initial_cover_arts: Vec::new(),
+                        initial_cover_arts: initial_cover_arts,
                     },
                     &mb_service,
                     &cover_service,
@@ -2498,10 +2975,10 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
 
                 println!(
                     "Preparing rip metadata and file naming for {} selected track(s)...",
-                    boundaries.len()
+                    read_plans.len()
                 );
 
-                for b in &boundaries {
+                for b in &read_plans {
                     let idx = b.track_number.saturating_sub(1) as usize;
                     if let Some(release) = mf.musicbrainz.as_ref()
                         && let Some(tmeta) = release.tracks.get(idx)
@@ -2571,7 +3048,17 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
         .entry("media".to_string())
         .or_insert_with(|| default_media_value(settings).to_string());
 
-    let track_plan: Vec<(u32, HashMap<String, String>)> = boundaries
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    let cover_arts_for_write = if let Some(mf) = metadata_flow.as_ref() {
+        mf.cover_arts.clone()
+    } else {
+        cli_cover_arts.clone()
+    };
+
+    #[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+    let cover_arts_for_write = cli_cover_arts.clone();
+
+    let track_plan: Vec<(u32, HashMap<String, String>)> = read_plans
         .iter()
         .map(|b| {
             (
@@ -2595,7 +3082,7 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
 
     let mut written_files = Vec::new();
     let mut benchmarks = Vec::new();
-    for boundary in &boundaries {
+    for boundary in &read_plans {
         let track_started = Instant::now();
         let pcm = match source {
             FullRipSource::Image => acquire_tracks_pcm_from_image_reader(
@@ -2682,7 +3169,7 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
         };
         out.push_str(&format!("AccurateRip:    {}\n", ar_line));
         if let Some(ar) = mf.accurip.as_ref() {
-            for b in &boundaries {
+            for b in &read_plans {
                 let idx = b.track_number.saturating_sub(1) as usize;
                 if let Some(tm) = ar.track_matches.get(idx) {
                     out.push_str(&format!(
@@ -2697,7 +3184,7 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
         }
     }
 
-    for boundary in &boundaries {
+    for boundary in &read_plans {
         let benchmark = benchmarks
             .iter()
             .find(|b| b.track_number == boundary.track_number)
@@ -2769,6 +3256,32 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
     for file in &written_files {
         out.push_str(&format!("FILE {}\n", file.absolute_path.display()));
     }
+
+    write_runtime_log_files(
+        settings,
+        &output_root,
+        &album_meta,
+        naming_track_count,
+        &out,
+    )?;
+
+    write_runtime_cue_files(
+        settings,
+        &output_root,
+        &album_meta,
+        naming_track_count,
+        &written_files,
+        &track_meta_map,
+    )?;
+
+    write_runtime_cover_files(
+        settings,
+        &output_root,
+        &album_meta,
+        naming_track_count,
+        &cover_arts_for_write,
+    )?;
+
     Ok(out)
 }
 
@@ -3181,6 +3694,106 @@ fn canonical_flac_vorbis_key(input: &str) -> String {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ReplayGainStats {
+    peak: f64,
+    mean_square: f64,
+    sample_count: u64,
+}
+
+impl ReplayGainStats {
+    fn rms(self) -> f64 {
+        self.mean_square.sqrt()
+    }
+}
+
+fn replaygain_stats_from_processed_pcm(input: &ProcessedPcmTrackData) -> Option<ReplayGainStats> {
+    if input.interleaved_i32_samples.is_empty() {
+        return None;
+    }
+
+    let full_scale = if input.spec.bits_per_sample == 24 {
+        8_388_608.0
+    } else {
+        32_768.0
+    };
+
+    let mut peak = 0.0f64;
+    let mut sum_sq = 0.0f64;
+    for &sample in &input.interleaved_i32_samples {
+        let normalized = (sample as f64) / full_scale;
+        let abs = normalized.abs();
+        if abs > peak {
+            peak = abs;
+        }
+        sum_sq += normalized * normalized;
+    }
+
+    let sample_count = input.interleaved_i32_samples.len() as u64;
+    if sample_count == 0 {
+        return None;
+    }
+
+    Some(ReplayGainStats {
+        peak,
+        mean_square: sum_sq / sample_count as f64,
+        sample_count,
+    })
+}
+
+fn replaygain_gain_db_from_rms(rms: f64) -> f64 {
+    if rms <= 1e-12 {
+        0.0
+    } else {
+        -18.0 - 20.0 * rms.log10()
+    }
+}
+
+fn build_replaygain_track_comment_map(stats: ReplayGainStats) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let gain_db = replaygain_gain_db_from_rms(stats.rms());
+    out.insert("REPLAYGAIN_REFERENCE_LOUDNESS".to_string(), "89.0 dB".to_string());
+    out.insert("REPLAYGAIN_TRACK_GAIN".to_string(), format!("{gain_db:+.2} dB"));
+    out.insert("REPLAYGAIN_TRACK_PEAK".to_string(), format!("{:.8}", stats.peak));
+    out
+}
+
+fn aggregate_album_replaygain_stats(stats: &[ReplayGainStats]) -> Option<ReplayGainStats> {
+    if stats.is_empty() {
+        return None;
+    }
+
+    let mut peak = 0.0f64;
+    let mut weighted_mean_square = 0.0f64;
+    let mut sample_count: u64 = 0;
+
+    for s in stats {
+        if s.peak > peak {
+            peak = s.peak;
+        }
+        weighted_mean_square += s.mean_square * s.sample_count as f64;
+        sample_count = sample_count.saturating_add(s.sample_count);
+    }
+
+    if sample_count == 0 {
+        return None;
+    }
+
+    Some(ReplayGainStats {
+        peak,
+        mean_square: weighted_mean_square / sample_count as f64,
+        sample_count,
+    })
+}
+
+fn build_replaygain_album_comment_map(album: ReplayGainStats) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let gain_db = replaygain_gain_db_from_rms(album.rms());
+    out.insert("REPLAYGAIN_ALBUM_GAIN".to_string(), format!("{gain_db:+.2} dB"));
+    out.insert("REPLAYGAIN_ALBUM_PEAK".to_string(), format!("{:.8}", album.peak));
+    out
+}
+
 fn build_flac_comment_map(
     settings: &Settings,
     album_meta: &HashMap<String, String>,
@@ -3339,6 +3952,8 @@ fn write_track_outputs_with_naming_tracks(
         let (format_suffix, extension) = output_format_descriptor(*fmt_kind)
             .ok_or(TrackOutputFlowError::UnsupportedOutputFormat(*fmt_kind))?;
 
+        let mut flac_replaygain_stats: Vec<(PathBuf, ReplayGainStats)> = Vec::new();
+
         let mut planned_paths: Vec<(usize, u32, PathBuf, PathBuf)> = Vec::new();
         for (idx, track) in input.tracks.iter().enumerate() {
             let relative_path_str = build_track_relative_path(
@@ -3396,6 +4011,13 @@ fn write_track_outputs_with_naming_tracks(
                 path: absolute_path.clone(),
                 message: e.to_string(),
             })?;
+
+            let replaygain_stats = if input.settings.enable_replaygain {
+                replaygain_stats_from_processed_pcm(&processed_pcm)
+            } else {
+                None
+            };
+
             completed_jobs = completed_jobs.saturating_add(1);
             if let Some(track_number) = progress_track_number {
                 emit_encoding_progress(track_number, completed_jobs);
@@ -3429,6 +4051,14 @@ fn write_track_outputs_with_naming_tracks(
                     }
 
                     let comments = build_flac_comment_map(&input.settings, &input.album_meta, track);
+                    let mut comments = comments;
+                    if let Some(stats) = replaygain_stats {
+                        for (k, v) in build_replaygain_track_comment_map(stats) {
+                            comments.insert(k, v);
+                        }
+                        flac_replaygain_stats.push((absolute_path.clone(), stats));
+                    }
+
                     embed_flac_vorbis_comments(&absolute_path, &comments)?;
                     completed_jobs = completed_jobs.saturating_add(1);
                     if let Some(track_number) = progress_track_number {
@@ -3446,6 +4076,22 @@ fn write_track_outputs_with_naming_tracks(
                 relative_path,
                 absolute_path,
             });
+        }
+
+        if *fmt_kind == OutputFormat::Flac
+            && input.settings.enable_replaygain
+            && !flac_replaygain_stats.is_empty()
+        {
+            let stats_only: Vec<ReplayGainStats> = flac_replaygain_stats
+                .iter()
+                .map(|(_, stats)| *stats)
+                .collect();
+            if let Some(album_stats) = aggregate_album_replaygain_stats(&stats_only) {
+                let album_comments = build_replaygain_album_comment_map(album_stats);
+                for (path, _) in &flac_replaygain_stats {
+                    embed_flac_vorbis_comments(path, &album_comments)?;
+                }
+            }
         }
     }
 
@@ -3971,7 +4617,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_offset_frame_adjustment_uses_over_under_read_frames_magnitude() {
+    fn apply_offset_frame_adjustment_matches_upstream_coarse_shift() {
         let boundary = TrackBoundary {
             track_number: 1,
             start_lsn: 0,
@@ -3983,6 +4629,7 @@ mod tests {
             ..Settings::default()
         };
         let got_pos = apply_offset_frame_adjustment(boundary, &settings_pos);
+        assert_eq!(got_pos.start_lsn, 0);
         assert_eq!(got_pos.frame_count, 101);
 
         let settings_neg = Settings {
@@ -3990,7 +4637,50 @@ mod tests {
             ..Settings::default()
         };
         let got_neg = apply_offset_frame_adjustment(boundary, &settings_neg);
-        assert_eq!(got_neg.frame_count, 102);
+        assert_eq!(got_neg.start_lsn, -2);
+        assert_eq!(got_neg.frame_count, 101);
+    }
+
+    #[test]
+    fn plan_track_read_clips_and_adds_silence_when_overread_disabled() {
+        let boundary = TrackBoundary {
+            track_number: 1,
+            start_lsn: 0,
+            frame_count: 100,
+        };
+        let settings = Settings {
+            over_under_read_frames: -2,
+            overread_leadinout: false,
+            ..Settings::default()
+        };
+
+        let plan = plan_track_read(boundary, &settings, 0, 1000);
+        assert_eq!(plan.read_start_lsn, 0);
+        assert_eq!(plan.read_frame_count, 99);
+        assert_eq!(plan.silence_before_frames, 2);
+        assert_eq!(plan.silence_after_frames, 0);
+        assert_eq!(plan.frame_count, 101);
+    }
+
+    #[test]
+    fn plan_track_read_keeps_out_of_range_reads_when_overread_enabled() {
+        let boundary = TrackBoundary {
+            track_number: 1,
+            start_lsn: 0,
+            frame_count: 100,
+        };
+        let settings = Settings {
+            over_under_read_frames: -2,
+            overread_leadinout: true,
+            ..Settings::default()
+        };
+
+        let plan = plan_track_read(boundary, &settings, 0, 1000);
+        assert_eq!(plan.read_start_lsn, -2);
+        assert_eq!(plan.read_frame_count, 101);
+        assert_eq!(plan.silence_before_frames, 0);
+        assert_eq!(plan.silence_after_frames, 0);
+        assert_eq!(plan.frame_count, 101);
     }
 
     #[test]
@@ -4213,6 +4903,51 @@ FILE "disc.bin" BINARY
             .expect("time should be after epoch")
             .as_nanos();
         repo_tmp.join(format!("cyanrip-rs-image-toc-{now}.cue"))
+    }
+
+    #[test]
+    fn initial_cover_arts_from_settings_supports_local_url_and_track_forms() {
+        let root = unique_temp_output_root();
+        std::fs::create_dir_all(&root).expect("temp root should be creatable");
+        let local_cover = root.join("front.jpg");
+        std::fs::write(&local_cover, [1u8, 2u8, 3u8]).expect("local cover fixture should be writable");
+
+        let settings = Settings {
+            cover_specs: vec![
+                format!("Front={}", local_cover.to_string_lossy()),
+                "Back=https://example.com/back.jpg".to_string(),
+                "2=/tmp/track2.png".to_string(),
+            ],
+            ..Settings::default()
+        };
+
+        let arts =
+            initial_cover_arts_from_settings(&settings, false).expect("cover specs should stage into initial cover arts");
+        assert_eq!(arts.len(), 2, "only album-level cover specs should seed initial cover arts");
+        assert_eq!(arts[0].title, "Front");
+        assert_eq!(arts[0].data.as_deref(), Some(&[1u8, 2u8, 3u8][..]));
+        assert_eq!(arts[0].extension.as_deref(), Some("jpg"));
+        assert_eq!(arts[1].title, "Back");
+        assert!(arts[1].data.is_none(), "URL cover should not be loaded as local bytes");
+
+        let cleanup = std::fs::remove_dir_all(&root);
+        assert!(cleanup.is_ok(), "temporary cover fixture root should be removable");
+    }
+
+    #[test]
+    fn initial_cover_arts_from_settings_rejects_missing_local_file() {
+        let settings = Settings {
+            cover_specs: vec!["Front=/definitely/missing/front.jpg".to_string()],
+            ..Settings::default()
+        };
+
+        let err = initial_cover_arts_from_settings(&settings, false).expect_err("missing local cover should fail");
+        match err {
+            RunWorkflowError::Runtime(msg) => {
+                assert!(msg.contains("failed to read cover art source"));
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
     }
 
     fn sample_pcm() -> PcmTrackData {
@@ -4544,6 +5279,10 @@ FILE "disc.bin" BINARY
         assert_eq!(result.written_files.len(), 1);
         let output_path = output_root.join("Example Album [FLAC]/01 - Intro.flac");
         assert!(output_path.exists(), "expected hdcd-enabled output path to exist");
+
+        let reader = claxon::FlacReader::open(&output_path)
+            .expect("written flac should be readable after hdcd processing");
+        assert_eq!(reader.streaminfo().bits_per_sample, 24);
 
         let cleanup = std::fs::remove_dir_all(&output_root);
         assert!(cleanup.is_ok(), "temporary output root should be removable");

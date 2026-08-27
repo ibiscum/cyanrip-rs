@@ -4,7 +4,7 @@ use std::path::Path;
 use flacenc::component::BitRepr;
 use flacenc::error::Verify;
 
-use crate::audio::PcmTrackData;
+use crate::audio::ProcessedPcmTrackData;
 
 #[derive(Debug)]
 pub enum FlacWriteError {
@@ -44,7 +44,7 @@ impl From<std::io::Error> for FlacWriteError {
     }
 }
 
-fn validate_input(input: &PcmTrackData) -> Result<(), FlacWriteError> {
+fn validate_input(input: &ProcessedPcmTrackData) -> Result<(), FlacWriteError> {
     if input.spec.channels == 0 {
         return Err(FlacWriteError::InvalidSpec("channels must be > 0"));
     }
@@ -53,21 +53,36 @@ fn validate_input(input: &PcmTrackData) -> Result<(), FlacWriteError> {
         return Err(FlacWriteError::InvalidSpec("sample_rate must be > 0"));
     }
 
-    if input.spec.bits_per_sample != 16 {
+    if input.spec.bits_per_sample != 16 && input.spec.bits_per_sample != 24 {
         return Err(FlacWriteError::InvalidSpec(
-            "FLAC writer currently supports 16-bit PCM only",
+            "FLAC writer currently supports 16-bit and 24-bit PCM",
         ));
     }
 
     let channels = usize::from(input.spec.channels);
-    if !input.interleaved_i16_samples.len().is_multiple_of(channels) {
+    if !input.interleaved_i32_samples.len().is_multiple_of(channels) {
         return Err(FlacWriteError::ChannelAlignment {
             channels: input.spec.channels,
-            sample_count: input.interleaved_i16_samples.len(),
+            sample_count: input.interleaved_i32_samples.len(),
         });
     }
 
-    let frames = input.interleaved_i16_samples.len() / channels;
+    let (min_allowed, max_allowed) = if input.spec.bits_per_sample == 16 {
+        (i32::from(i16::MIN), i32::from(i16::MAX))
+    } else {
+        (-8_388_608, 8_388_607)
+    };
+    if input
+        .interleaved_i32_samples
+        .iter()
+        .any(|&sample| sample < min_allowed || sample > max_allowed)
+    {
+        return Err(FlacWriteError::InvalidSpec(
+            "PCM sample value out of range for declared bit depth",
+        ));
+    }
+
+    let frames = input.interleaved_i32_samples.len() / channels;
     if frames < 16 {
         return Err(FlacWriteError::InvalidSpec(
             "FLAC writer currently requires at least 16 frames",
@@ -77,7 +92,7 @@ fn validate_input(input: &PcmTrackData) -> Result<(), FlacWriteError> {
     Ok(())
 }
 
-pub fn render_flac_bytes(input: &PcmTrackData) -> Result<Vec<u8>, FlacWriteError> {
+pub fn render_flac_bytes(input: &ProcessedPcmTrackData) -> Result<Vec<u8>, FlacWriteError> {
     validate_input(input)?;
 
     let config = flacenc::config::Encoder::default()
@@ -86,9 +101,9 @@ pub fn render_flac_bytes(input: &PcmTrackData) -> Result<Vec<u8>, FlacWriteError
 
     let source = flacenc::source::MemSource::from_samples(
         &input
-            .interleaved_i16_samples
+            .interleaved_i32_samples
             .iter()
-            .map(|&s| i32::from(s))
+            .copied()
             .collect::<Vec<_>>(),
         usize::from(input.spec.channels),
         usize::from(input.spec.bits_per_sample),
@@ -106,7 +121,7 @@ pub fn render_flac_bytes(input: &PcmTrackData) -> Result<Vec<u8>, FlacWriteError
     Ok(sink.as_slice().to_vec())
 }
 
-pub fn write_flac_file(path: &Path, input: &PcmTrackData) -> Result<(), FlacWriteError> {
+pub fn write_flac_file(path: &Path, input: &ProcessedPcmTrackData) -> Result<(), FlacWriteError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -123,14 +138,14 @@ mod tests {
 
     use super::*;
 
-    fn sample_track_stereo() -> PcmTrackData {
-        PcmTrackData {
+    fn sample_track_stereo() -> ProcessedPcmTrackData {
+        ProcessedPcmTrackData {
             spec: PcmSpec {
                 channels: 2,
                 sample_rate: 44_100,
                 bits_per_sample: 16,
             },
-            interleaved_i16_samples: vec![
+            interleaved_i32_samples: vec![
                 0, 1000, -1000, 32767, -32768, 42, 120, -120, 345, -345, 789, -789, 2000,
                 -2000, 1111, -1111, 4321, -4321, 99, -99, 12, -12, 34, -34, 56, -56, 78, -78,
                 90, -90, 321, -321,
@@ -155,25 +170,23 @@ mod tests {
             .map(|x| x.expect("sample decode should work"))
             .collect();
         let expected: Vec<i32> = track
-            .interleaved_i16_samples
-            .iter()
-            .map(|&s| i32::from(s))
-            .collect();
+            .interleaved_i32_samples
+            .to_vec();
         assert_eq!(samples, expected);
     }
 
     #[test]
-    fn rejects_non_16_bit_spec_for_now() {
+    fn rejects_unsupported_bit_depth() {
         let mut track = sample_track_stereo();
-        track.spec.bits_per_sample = 24;
-        let err = render_flac_bytes(&track).expect_err("must reject non-16-bit path");
-        assert!(format!("{err}").contains("16-bit"));
+        track.spec.bits_per_sample = 20;
+        let err = render_flac_bytes(&track).expect_err("must reject unsupported bit depth");
+        assert!(format!("{err}").contains("16-bit and 24-bit"));
     }
 
     #[test]
     fn rejects_non_divisible_interleaved_samples() {
         let mut track = sample_track_stereo();
-        track.interleaved_i16_samples.push(7);
+        track.interleaved_i32_samples.push(7);
         let err = render_flac_bytes(&track).expect_err("must reject misaligned channels");
         assert!(format!("{err}").contains("not divisible"));
     }

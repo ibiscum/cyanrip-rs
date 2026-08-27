@@ -1,6 +1,6 @@
 # Parity Matrix (C -> Rust)
 
-Last updated: 2026-08-26
+Last updated: 2026-08-27
 
 Legend:
 - Complete: Implemented in Rust with regression tests.
@@ -48,19 +48,19 @@ Source baseline is /cyanrip/src.
 | FLAC writer | cyanrip_encode.c | write PCM samples to FLAC stream/container | src/audio/flac.rs | Complete (core rules) | Yes |
 | Per-track output dispatch | cyanrip_main.c + cyanrip_encode.c | select configured output formats and emit concrete per-track files | src/app.rs write_track_outputs | Complete (WAV/FLAC scope) | Yes |
 | FLAC metadata embedding | cyanrip_encode.c + cyanrip_main.c metadata flow | propagate album/track/disc metadata into FLAC Vorbis comments | src/app.rs write_track_outputs + metaflac | Complete (FLAC scope) | Yes |
-| HDCD/deemphasis option handling | cyanrip_encode.c + cyanrip_main.c | processing-path selection precedence: HDCD over deemphasis; -W disables auto-deemphasis; -E forces deemphasis unless HDCD path is selected | src/audio/process.rs + src/app.rs | In progress (selection/interaction parity; full HDCD decode backend pending) | Yes |
+| HDCD/deemphasis option handling | cyanrip_encode.c + cyanrip_main.c | processing-path selection precedence: HDCD over deemphasis; -W disables auto-deemphasis; -E forces deemphasis unless HDCD path is selected | src/audio/process.rs + src/app.rs | Complete (ffmpeg hdcd backend wired; 24-bit output propagation for WAV/FLAC) | Yes |
 | FIFO frame/packet queues | fifo_frame.c + fifo_packet.c | thread-safe producer-consumer queues | src/audio/queue.rs | Planned | No |
 | Paranoia ripping state machine | cyanrip_main.c + cdio/paranoia callbacks | retry loop, retry-limit finalize, media-changed abort, and flush/finalize transitions | src/cdda/paranoia.rs + src/cdda/reader.rs + src/app.rs | In progress (state machine wired into image/physical run path; callback-level parity still pending) | Yes |
 | CD image + drive access | cyanrip_main.c + libcdio/paranoia | media read, retries, hot-remove checks | src/cdda/reader.rs + src/cdda/linux_drive.rs + src/app.rs | In progress (image-backed + Linux adapters wired; broader real-drive parity still pending) | Yes |
-| ReplayGain and EBU R128 | cyanrip_main.c + cyanrip_encode.c | album/track loudness metadata computation | src/audio/replaygain.rs | Deferred | No |
+| ReplayGain and EBU R128 | cyanrip_main.c + cyanrip_encode.c | album/track loudness metadata computation | src/app.rs FLAC tag flow | In progress (FLAC ReplayGain Vorbis tags emitted; `-K/--no-replaygain` disables tag generation; full EBU R128 and broader codec parity still pending) | Yes (FLAC scope) |
 | Full codec parity set | cyanrip_encode.c | FLAC, MP3, TTA, OPUS, AAC, WV, VORBIS, ALAC, WAV, PCM | src/audio/codecs/* | Deferred (out of current scope: FLAC-only target) | No |
 
 ## Current Gap Summary
 
 - Implemented and test-covered: core settings and validation logic from CLI/control path plus deterministic naming/cue/log/checksum modules, all M3 metadata core modules, and metadata-flow orchestration.
-- Major gaps: full HDCD decode/backend parity (including higher bit-depth propagation), and CD I/O backend integration.
+- Major gaps: CD I/O backend integration and broader end-to-end real-drive parity hardening.
 - Paranoia mode status: control-path state machine is now consumed by both image and physical full-rip bridge paths (with runtime completion checks); full callback/transport parity and wider real-drive validation remain pending.
-- Deferred explicitly: full codec parity and replaygain implementation details until core end-to-end path is stable.
+- Deferred explicitly: full codec parity and remaining ReplayGain/EBU R128 parity outside current FLAC-scope path.
 
 ## Immediate Next Slice
 
