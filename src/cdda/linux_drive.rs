@@ -344,6 +344,47 @@ pub fn read_drive_hwinfo(_device_path: Option<&str>) -> Option<DriveHwInfo> {
     None
 }
 
+#[cfg(feature = "backend-libcdio-sys")]
+pub fn eject_linux_drive_if_supported(device_path: Option<&str>) -> bool {
+    let mut ptr = if let Some(path) = device_path {
+        let c_path = match std::ffi::CString::new(path) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        unsafe { libcdio_sys::cdio_open(c_path.as_ptr(), libcdio_sys::driver_id_t_DRIVER_UNKNOWN) }
+    } else {
+        unsafe { libcdio_sys::cdio_open(std::ptr::null(), libcdio_sys::driver_id_t_DRIVER_UNKNOWN) }
+    };
+
+    if ptr.is_null() {
+        return false;
+    }
+
+    let mut read_cap: libcdio_sys::cdio_drive_read_cap_t = 0;
+    let mut write_cap: libcdio_sys::cdio_drive_write_cap_t = 0;
+    let mut misc_cap: libcdio_sys::cdio_drive_misc_cap_t = 0;
+    unsafe {
+        libcdio_sys::cdio_get_drive_cap(ptr, &mut read_cap, &mut write_cap, &mut misc_cap)
+    };
+
+    let can_eject = (misc_cap & libcdio_sys::cdio_drive_cap_misc_t_CDIO_DRIVE_CAP_MISC_EJECT) != 0;
+    if !can_eject {
+        unsafe { libcdio_sys::cdio_destroy(ptr) };
+        return false;
+    }
+
+    let rc = unsafe { libcdio_sys::cdio_eject_media(&mut ptr) };
+    if (rc as i32) != 0 && !ptr.is_null() {
+        unsafe { libcdio_sys::cdio_destroy(ptr) };
+    }
+    (rc as i32) == 0
+}
+
+#[cfg(not(feature = "backend-libcdio-sys"))]
+pub fn eject_linux_drive_if_supported(_device_path: Option<&str>) -> bool {
+    false
+}
+
 pub fn run_paranoia_on_linux_drive_with_backend<B, F>(
     backend: B,
     device_path: Option<&str>,

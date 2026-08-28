@@ -210,6 +210,7 @@ fn cli_outputs_and_disc_tags_drive_writer_dispatch_and_flac_tags() {
         settings: cfg.settings,
         output_root: output_root.clone(),
         album_meta,
+        cover_arts: Vec::new(),
         tracks,
     })
     .expect("writer dispatch should succeed");
@@ -278,6 +279,7 @@ fn cli_no_replaygain_disables_replaygain_flac_tags() {
         settings: cfg.settings,
         output_root: output_root.clone(),
         album_meta,
+        cover_arts: Vec::new(),
         tracks,
     })
     .expect("writer dispatch should succeed");

@@ -1,6 +1,6 @@
 # Parity Matrix (C -> Rust)
 
-Last updated: 2026-08-27
+Last updated: 2026-08-28
 
 Legend:
 - Complete: Implemented in Rust with regression tests.
@@ -30,6 +30,9 @@ Source baseline is /cyanrip/src.
 | Folder scheme rule | cyanrip_main.c | require {format} when multiple outputs | src/lib.rs validate_folder_scheme | Complete | Yes |
 | Mode conflict rule | cyanrip_main.c | reject info-only and cue-only together; reject find-offset with info-only/cue-only | src/lib.rs validate_mode_combo | Complete | Yes |
 | Full CLI parser | genopt.h + cyanrip_main.c | full command-line flag and value parser | src/cli.rs | Complete | Yes (golden + edge cases + help layout) |
+| Verify-log action dispatch | cyanrip_main.c + fun512.c | verify-log short-circuit parse path and checksum status mapping | src/cli.rs + src/main.rs + src/fun512.rs | Complete | Yes |
+| Eject option runtime behavior | cyanrip_main.c | success-path cleanup eject for capable physical drives; parser side effects disable in info/find-offset modes | src/cli.rs + src/app.rs + src/cdda/linux_drive.rs | Complete (Linux libcdio-sys scope) | Yes |
+| No-coverart-embed runtime behavior | cyanrip_encode.c | disable embedded cover art while keeping cover discovery and standalone cover-file behavior | src/cli.rs + src/app.rs | Complete (FLAC scope) | Yes |
 | Name templating | naming.c | template interpolation, conditional expansion, path-kind builders (track/log/cue/cover), collision checks, and optional parent-dir creation | src/naming.rs | Complete | Yes |
 | Path sanitation | naming.c + os_compat.h | platform-sensitive replacement policy | src/naming.rs | Complete | Yes |
 | CUE writer | cue_writer.c | CUE generation and track mapping details (metadata lines, per-track FILE/TRACK records, pregap/index handling, preemphasis/ISRC plus SONGWRITER/COMPOSER/ARRANGER, FLAGS PRE/DCP/4CH/SCMS, POSTGAP, and cue-path-relative filenames) | src/cue.rs + src/app.rs cue-track ingestion | Complete | Yes |
@@ -47,7 +50,7 @@ Source baseline is /cyanrip/src.
 | WAV writer | cyanrip_encode.c | write PCM samples to RIFF/WAVE container | src/audio/wav.rs | Complete (core rules) | Yes |
 | FLAC writer | cyanrip_encode.c | write PCM samples to FLAC stream/container | src/audio/flac.rs | Complete (core rules) | Yes |
 | Per-track output dispatch | cyanrip_main.c + cyanrip_encode.c | select configured output formats and emit concrete per-track files | src/app.rs write_track_outputs | Complete (WAV/FLAC scope) | Yes |
-| FLAC metadata embedding | cyanrip_encode.c + cyanrip_main.c metadata flow | propagate album/track/disc metadata into FLAC Vorbis comments | src/app.rs write_track_outputs + metaflac | Complete (FLAC scope) | Yes |
+| FLAC metadata embedding | cyanrip_encode.c + cyanrip_main.c metadata flow | propagate album/track/disc metadata into FLAC Vorbis comments and attach cover art when enabled | src/app.rs write_track_outputs + metaflac | Complete (FLAC scope) | Yes |
 | HDCD/deemphasis option handling | cyanrip_encode.c + cyanrip_main.c | processing-path selection precedence: HDCD over deemphasis; -W disables auto-deemphasis; -E forces deemphasis unless HDCD path is selected | src/audio/process.rs + src/app.rs | Complete (ffmpeg hdcd backend wired; 24-bit output propagation for WAV/FLAC) | Yes |
 | FIFO frame/packet queues | fifo_frame.c + fifo_packet.c | thread-safe producer-consumer queues | src/audio/queue.rs | Planned | No |
 | Paranoia ripping state machine | cyanrip_main.c + cdio/paranoia callbacks | retry loop, retry-limit finalize, media-changed abort, and flush/finalize transitions | src/cdda/paranoia.rs + src/cdda/reader.rs + src/app.rs | In progress (state machine wired into image/physical run path; callback-level parity still pending) | Yes |

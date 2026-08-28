@@ -1789,6 +1789,7 @@ fn render_synthetic_full_rip(settings: &Settings) -> Result<String, RunWorkflowE
                 settings: settings.clone(),
                 output_root: output_root.clone(),
                 album_meta: album_meta.clone(),
+                cover_arts: cli_cover_arts.clone(),
                 tracks: vec![TrackOutputInput {
                     track_number: *track_number,
                     track_meta: track_meta.clone(),
@@ -2077,6 +2078,25 @@ enum FullRipSource {
     Image,
     Physical,
 }
+
+fn should_attempt_eject_on_success(settings: &Settings, source: FullRipSource) -> bool {
+    settings.eject_on_success_rip && source == FullRipSource::Physical
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn maybe_eject_after_success(settings: &Settings, source: FullRipSource) {
+    if !should_attempt_eject_on_success(settings, source) {
+        return;
+    }
+
+    use crate::cdda::linux_drive::eject_linux_drive_if_supported;
+
+    let device_path = settings.dev_path.as_deref().or(Some("/dev/cdrom"));
+    let _ = eject_linux_drive_if_supported(device_path);
+}
+
+#[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+fn maybe_eject_after_success(_settings: &Settings, _source: FullRipSource) {}
 
 fn full_rip_source_from_settings(settings: &Settings) -> FullRipSource {
     match settings.dev_path.as_deref() {
@@ -3123,6 +3143,7 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
                 settings: settings.clone(),
                 output_root: output_root.clone(),
                 album_meta: album_meta.clone(),
+                cover_arts: cover_arts_for_write.clone(),
                 tracks: vec![TrackOutputInput {
                     track_number: boundary.track_number,
                     track_meta,
@@ -3282,6 +3303,8 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
         &cover_arts_for_write,
     )?;
 
+    maybe_eject_after_success(settings, source);
+
     Ok(out)
 }
 
@@ -3307,7 +3330,9 @@ pub fn run_workflow(settings: &Settings) -> Result<Option<String>, RunWorkflowEr
                 "Offset is unset! To continue with an offset of 0, run with -s 0!".to_string(),
             ));
         }
-        return run_cue_only_mode(settings).map(Some);
+        let out = run_cue_only_mode(settings)?;
+        maybe_eject_after_success(settings, full_rip_source_from_settings(settings));
+        return Ok(Some(out));
     }
 
     if env_var_truthy("CYANRIP_RS_ENABLE_SYNTHETIC_RIP") {
@@ -3589,6 +3614,7 @@ pub struct TrackOutputFlowInput {
     pub settings: Settings,
     pub output_root: PathBuf,
     pub album_meta: HashMap<String, String>,
+    pub cover_arts: Vec<CoverArtImage>,
     pub tracks: Vec<TrackOutputInput>,
 }
 
@@ -3836,6 +3862,7 @@ fn build_flac_comment_map(
 fn embed_flac_vorbis_comments(
     path: &Path,
     comments: &HashMap<String, String>,
+    embedded_picture: Option<&FlacEmbeddedPicture>,
 ) -> Result<(), TrackOutputFlowError> {
     let mut tag = metaflac::Tag::read_from_path(path).map_err(|e| TrackOutputFlowError::Tagging {
         output_format: OutputFormat::Flac,
@@ -3847,10 +3874,85 @@ fn embed_flac_vorbis_comments(
         tag.set_vorbis(key, vec![value]);
     }
 
+    if let Some(picture) = embedded_picture {
+        tag.add_picture(
+            picture.mime_type.clone(),
+            picture.picture_type,
+            picture.data.clone(),
+        );
+    }
+
     tag.save().map_err(|e| TrackOutputFlowError::Tagging {
         output_format: OutputFormat::Flac,
         path: path.to_path_buf(),
         message: e.to_string(),
+    })
+}
+
+#[derive(Debug, Clone)]
+struct FlacEmbeddedPicture {
+    mime_type: String,
+    picture_type: metaflac::block::PictureType,
+    data: Vec<u8>,
+}
+
+fn infer_cover_mime_type(art: &CoverArtImage) -> String {
+    if let Some(content_type) = art.content_type.as_deref() {
+        let mime = content_type
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if !mime.is_empty() {
+            return mime;
+        }
+    }
+
+    let extension = art
+        .extension
+        .clone()
+        .or_else(|| infer_cover_extension_from_source(&art.source_url));
+
+    match extension.as_deref() {
+        Some("jpg") | Some("jpeg") => "image/jpeg".to_string(),
+        Some("png") => "image/png".to_string(),
+        Some("gif") => "image/gif".to_string(),
+        Some("webp") => "image/webp".to_string(),
+        Some("bmp") => "image/bmp".to_string(),
+        Some("tif") | Some("tiff") => "image/tiff".to_string(),
+        _ => "application/octet-stream".to_string(),
+    }
+}
+
+fn pick_cover_art_for_embedding(cover_arts: &[CoverArtImage]) -> Option<&CoverArtImage> {
+    cover_arts
+        .iter()
+        .find(|art| {
+            art.title.eq_ignore_ascii_case("front")
+                && art.data.as_ref().is_some_and(|bytes| !bytes.is_empty())
+        })
+        .or_else(|| {
+            cover_arts
+                .iter()
+                .find(|art| art.data.as_ref().is_some_and(|bytes| !bytes.is_empty()))
+        })
+}
+
+fn flac_embedded_picture_from_cover_arts(cover_arts: &[CoverArtImage]) -> Option<FlacEmbeddedPicture> {
+    let art = pick_cover_art_for_embedding(cover_arts)?;
+    let data = art.data.clone()?;
+
+    let picture_type = if art.title.eq_ignore_ascii_case("back") {
+        metaflac::block::PictureType::CoverBack
+    } else {
+        metaflac::block::PictureType::CoverFront
+    };
+
+    Some(FlacEmbeddedPicture {
+        mime_type: infer_cover_mime_type(art),
+        picture_type,
+        data,
     })
 }
 
@@ -3948,6 +4050,12 @@ fn write_track_outputs_with_naming_tracks(
     };
 
     let mut written_files = Vec::new();
+    let flac_embedded_picture = if input.settings.disable_coverart_embedding {
+        None
+    } else {
+        flac_embedded_picture_from_cover_arts(&input.cover_arts)
+    };
+
     for fmt_kind in &input.settings.outputs {
         let (format_suffix, extension) = output_format_descriptor(*fmt_kind)
             .ok_or(TrackOutputFlowError::UnsupportedOutputFormat(*fmt_kind))?;
@@ -4059,7 +4167,7 @@ fn write_track_outputs_with_naming_tracks(
                         flac_replaygain_stats.push((absolute_path.clone(), stats));
                     }
 
-                    embed_flac_vorbis_comments(&absolute_path, &comments)?;
+                    embed_flac_vorbis_comments(&absolute_path, &comments, flac_embedded_picture.as_ref())?;
                     completed_jobs = completed_jobs.saturating_add(1);
                     if let Some(track_number) = progress_track_number {
                         emit_encoding_progress(track_number, completed_jobs);
@@ -4089,7 +4197,7 @@ fn write_track_outputs_with_naming_tracks(
             if let Some(album_stats) = aggregate_album_replaygain_stats(&stats_only) {
                 let album_comments = build_replaygain_album_comment_map(album_stats);
                 for (path, _) in &flac_replaygain_stats {
-                    embed_flac_vorbis_comments(path, &album_comments)?;
+                    embed_flac_vorbis_comments(path, &album_comments, None)?;
                 }
             }
         }
@@ -4275,6 +4383,17 @@ mod tests {
             }
             other => panic!("unexpected info-only outcome: {other:?}"),
         }
+    }
+
+    #[test]
+    fn eject_gate_requires_flag_and_physical_source() {
+        let mut settings = Settings::default();
+        assert!(!should_attempt_eject_on_success(&settings, FullRipSource::Physical));
+        assert!(!should_attempt_eject_on_success(&settings, FullRipSource::Image));
+
+        settings.eject_on_success_rip = true;
+        assert!(should_attempt_eject_on_success(&settings, FullRipSource::Physical));
+        assert!(!should_attempt_eject_on_success(&settings, FullRipSource::Image));
     }
 
     #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
@@ -5174,6 +5293,7 @@ FILE "disc.bin" BINARY
             settings,
             output_root: output_root.clone(),
             album_meta,
+            cover_arts: Vec::new(),
             tracks,
         })
         .expect("dispatch should write wav and flac outputs");
@@ -5213,6 +5333,119 @@ FILE "disc.bin" BINARY
     }
 
     #[test]
+    fn flac_embeds_cover_art_by_default_when_available() {
+        let output_root = unique_temp_output_root();
+
+        let settings = Settings {
+            outputs: vec![OutputFormat::Flac],
+            folder_name_scheme: "{album} [{format}]".to_string(),
+            track_name_scheme: "{track} - {title}".to_string(),
+            ..Settings::default()
+        };
+
+        let album_meta: HashMap<String, String> = [
+            ("album".to_string(), "Example Album".to_string()),
+            ("album_artist".to_string(), "Example Artist".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let tracks = vec![TrackOutputInput {
+            track_number: 1,
+            track_meta: track_meta("01", "Intro"),
+            pcm: sample_pcm(),
+        }];
+
+        let cover_bytes = vec![0xFF, 0xD8, 0xFF, 0xD9];
+        let cover_arts = vec![CoverArtImage {
+            title: "Front".to_string(),
+            source: Some("test".to_string()),
+            source_url: "front.jpg".to_string(),
+            extension: Some("jpg".to_string()),
+            data: Some(cover_bytes.clone()),
+            content_type: Some("image/jpeg".to_string()),
+        }];
+
+        let result = write_track_outputs(TrackOutputFlowInput {
+            settings,
+            output_root: output_root.clone(),
+            album_meta,
+            cover_arts,
+            tracks,
+        })
+        .expect("flac output should succeed");
+
+        assert_eq!(result.written_files.len(), 1);
+
+        let flac_tag =
+            metaflac::Tag::read_from_path(output_root.join("Example Album [FLAC]/01 - Intro.flac"))
+                .expect("flac tags should be readable");
+        let pictures: Vec<&metaflac::block::Picture> = flac_tag.pictures().collect();
+
+        assert_eq!(pictures.len(), 1, "one front cover should be embedded");
+        assert_eq!(pictures[0].picture_type, metaflac::block::PictureType::CoverFront);
+        assert_eq!(pictures[0].mime_type, "image/jpeg");
+        assert_eq!(pictures[0].data, cover_bytes);
+
+        let cleanup = std::fs::remove_dir_all(&output_root);
+        assert!(cleanup.is_ok(), "temporary output root should be removable");
+    }
+
+    #[test]
+    fn no_coverart_embed_skips_flac_picture_embedding() {
+        let output_root = unique_temp_output_root();
+
+        let settings = Settings {
+            outputs: vec![OutputFormat::Flac],
+            disable_coverart_embedding: true,
+            folder_name_scheme: "{album} [{format}]".to_string(),
+            track_name_scheme: "{track} - {title}".to_string(),
+            ..Settings::default()
+        };
+
+        let album_meta: HashMap<String, String> = [
+            ("album".to_string(), "Example Album".to_string()),
+            ("album_artist".to_string(), "Example Artist".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let tracks = vec![TrackOutputInput {
+            track_number: 1,
+            track_meta: track_meta("01", "Intro"),
+            pcm: sample_pcm(),
+        }];
+
+        let cover_arts = vec![CoverArtImage {
+            title: "Front".to_string(),
+            source: Some("test".to_string()),
+            source_url: "front.jpg".to_string(),
+            extension: Some("jpg".to_string()),
+            data: Some(vec![0xFF, 0xD8, 0xFF, 0xD9]),
+            content_type: Some("image/jpeg".to_string()),
+        }];
+
+        let result = write_track_outputs(TrackOutputFlowInput {
+            settings,
+            output_root: output_root.clone(),
+            album_meta,
+            cover_arts,
+            tracks,
+        })
+        .expect("flac output should succeed with embedding disabled");
+
+        assert_eq!(result.written_files.len(), 1);
+
+        let flac_tag =
+            metaflac::Tag::read_from_path(output_root.join("Example Album [FLAC]/01 - Intro.flac"))
+                .expect("flac tags should be readable");
+        assert_eq!(flac_tag.pictures().count(), 0);
+
+        let cleanup = std::fs::remove_dir_all(&output_root);
+        assert!(cleanup.is_ok(), "temporary output root should be removable");
+    }
+
+    #[test]
     fn rejects_unsupported_output_formats_in_dispatch() {
         let output_root = unique_temp_output_root();
 
@@ -5235,6 +5468,7 @@ FILE "disc.bin" BINARY
             settings,
             output_root,
             album_meta,
+            cover_arts: Vec::new(),
             tracks,
         })
         .expect_err("unsupported format should error");
@@ -5272,6 +5506,7 @@ FILE "disc.bin" BINARY
             settings,
             output_root: output_root.clone(),
             album_meta,
+            cover_arts: Vec::new(),
             tracks,
         })
         .expect("hdcd option should be handled without processing failure");

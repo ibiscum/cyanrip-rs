@@ -95,6 +95,8 @@ This applies to cover files written by full-rip and synthetic full-rip runtime f
 
 ## Interaction With Related Options
 
+For umbrella disable semantics, see `no-coverart_option_flow.md` (`--no-coverart` status and equivalents).
+
 - `--no-coverart-db`: disables DB lookup for missing covers.
 - `--cover-size`: controls DB cover variant selection.
 - `--no-coverart-embed`: embedding control (separate from external cover-file writing).

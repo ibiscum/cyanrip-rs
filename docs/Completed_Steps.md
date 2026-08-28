@@ -1,6 +1,6 @@
 # Completed Steps
 
-Last updated: 2026-08-26
+Last updated: 2026-08-28
 
 This document summarizes completed migration steps and major code changes.
 
@@ -189,9 +189,13 @@ Completed subtopic:
 - Implemented runtime verify-log mode in [../src/main.rs](../src/main.rs) with FUN512 outcome mapping and C-aligned result text.
 - Expanded differential harness to include verify-log fixture outcomes (`valid`, `mismatch`, `no_checksum`, `trailing`, and missing-file I/O error).
 - Added Rust-only integration test [../tests/verify_log_cli.rs](../tests/verify_log_cli.rs) to keep verify-log exit-code/message behavior guarded in normal test runs.
+- Implemented `-G/--no-coverart-embed` runtime behavior in [../src/app.rs](../src/app.rs): FLAC picture embedding now follows `settings.disable_coverart_embedding` while preserving normal cover discovery/output flow.
+- Implemented `-Q/--eject` runtime behavior in [../src/app.rs](../src/app.rs) with capability-gated Linux libcdio ejection helper in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs).
 
 Coverage notes:
 - CLI option surface and parse-level action routing are now explicitly audited.
+- Added FLAC embedding gate regression tests in [../src/app.rs](../src/app.rs) (`flac_embeds_cover_art_by_default_when_available`, `no_coverart_embed_skips_flac_picture_embedding`).
+- Added eject gate regression test in [../src/app.rs](../src/app.rs) (`eject_gate_requires_flag_and_physical_source`).
 - End-to-end workflow parity remains pending while run-path hardening and broader differential coverage continue.
 
 Run-path progress:

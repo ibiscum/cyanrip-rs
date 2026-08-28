@@ -1,6 +1,6 @@
 # Next Steps
 
-Last updated: 2026-08-26
+Last updated: 2026-08-28
 
 This list tracks remaining work to close migration milestones and release parity.
 
@@ -19,7 +19,7 @@ This list tracks remaining work to close migration milestones and release parity
 - Feed finish-summary parity lines from runtime match outcomes.
 
 4. M7 differential expansion
-- Expand differential harness beyond CLI/verify-log into fixture-backed workflow slices.
+- Expand differential harness beyond CLI/verify-log into fixture-backed workflow slices (run-path and metadata/output behavior).
 - Add focused differential cases for find-offset and selected-track run behavior.
 
 5. Release parity package
