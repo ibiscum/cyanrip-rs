@@ -37,6 +37,7 @@ Documents:
 - [SPEED_OPTION_FLOW.md](speed_option_flow.md): `-S/--speed` parsing, settings mapping, and current runtime limitation notes.
 - [PREGAP_OPTION_FLOW.md](pregap_option_flow.md): per-track pregap action parsing and runtime application for `-p/--pregap`.
 - [PARANOIA_OPTION_FLOW.md](paranoia_option_flow.md): level parsing and runtime reader/paranoia execution behavior for `-P/--paranoia`.
+- [PARANOIA_UPSTREAM_PARITY_PLAN.md](paranoia_upstream_parity_plan.md): implementation-ready plan to move from precheck-plus-reread behavior to an upstream-style integrated paranoia loop.
 - [HDCD_OPTION_FLOW.md](hdcd_option_flow.md): purpose, precedence, processing backend, and 24-bit output behavior for `-H/--hdcd`.
 - [FORCE_DEEMPHASIS_OPTION_FLOW.md](force-deemphasis_option_flow.md): purpose, precedence, and runtime processing behavior for `-E/--force-deemphasis`.
 - [NO_DEEMPHASIS_OPTION_FLOW.md](no-deemphasis_option_flow.md): purpose, automatic-path disable semantics, and runtime behavior for `-W/--no-deemphasis`.

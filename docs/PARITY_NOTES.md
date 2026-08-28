@@ -26,6 +26,11 @@ This document tracks implementation differences that are currently accepted and 
 - Automated real-drive scenarios (TOC read, frame read, paranoia run, interruption abort path) are passing on `/dev/cdrom` via `scripts/run_m6_hardware_validation.sh`.
 - Manual media-change scenario executed and recorded in [M6_REAL_HARDWARE_VALIDATION.md](M6_REAL_HARDWARE_VALIDATION.md).
 
+6. Paranoia integrated loop parity (temporary accepted difference)
+- Current Rust full-rip path performs a paranoia precheck pass and then a separate direct-read pass for PCM acquisition.
+- Upstream uses a single integrated frame loop where paranoia-read frames are the same frames consumed for checksum and encode decisions.
+- This difference is accepted temporarily and tracked for closure in [paranoia_upstream_parity_plan.md](paranoia_upstream_parity_plan.md).
+
 ## Policy
 
 Any new accepted difference must be:

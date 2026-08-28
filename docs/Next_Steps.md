@@ -14,15 +14,20 @@ This list tracks remaining work to close migration milestones and release parity
 - Harden physical-drive full-rip boundary/error handling (track boundaries, media-change, read-retry escalation).
 - Keep synthetic full-rip path as the hardware-free regression baseline while production path matures.
 
-3. M7 parity: AccurateRip runtime verification
+3. M7 parity: upstream-integrated paranoia loop
+- Replace current precheck-plus-direct-read behavior with one integrated paranoia frame loop for paranoia-enabled runs.
+- Align retry/repair behavior and frame-failure policy to upstream expectations, including callback-driven status accounting.
+- Add differential and regression coverage for media-change, retry-limit finalize, and repeat-rip interactions.
+
+4. M7 parity: AccurateRip runtime verification
 - Wire rip-time AccurateRip checksum generation/match reporting into run path.
 - Feed finish-summary parity lines from runtime match outcomes.
 
-4. M7 differential expansion
+5. M7 differential expansion
 - Expand differential harness beyond CLI/verify-log into fixture-backed workflow slices (run-path and metadata/output behavior).
 - Add focused differential cases for find-offset and selected-track run behavior.
 
-5. Release parity package
+6. Release parity package
 - Finalize known differences and accepted deviations in parity notes/matrix.
 - Prepare release checklist and migration notes.
 
