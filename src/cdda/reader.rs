@@ -14,6 +14,13 @@ pub trait CddaFrameReader {
     fn seek_frame(&mut self, lsn: i32) -> Result<(), CddaReadError>;
     fn read_frame(&mut self) -> Result<Vec<u8>, CddaReadError>;
     fn media_changed(&self) -> bool;
+
+    /// Callback counters recorded by a real paranoia engine during the most recent
+    /// `read_frame` call, if this reader is backed by one. Software-only readers
+    /// (fault-injection, raw sector readers) use the default of `None`.
+    fn take_native_callback_counts(&mut self) -> Option<ParanoiaCallbackCounters> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +105,7 @@ pub struct ParanoiaTrackRunResult {
     pub events: Vec<RipEvent>,
     pub passes: u32,
     pub callback_counters: ParanoiaCallbackCounters,
+    pub final_frames: Option<Vec<Vec<u8>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,12 +153,53 @@ impl ParanoiaCallbackCounters {
     pub fn get(&self, kind: ParanoiaCallbackKind) -> u64 {
         self.counts[kind as usize]
     }
+
+    pub fn merge(&mut self, other: &ParanoiaCallbackCounters) {
+        for idx in 0..PARANOIA_CALLBACK_KIND_COUNT {
+            self.counts[idx] = self.counts[idx].saturating_add(other.counts[idx]);
+        }
+    }
+}
+
+impl ParanoiaCallbackKind {
+    /// Maps a raw `paranoia_cb_mode_t` value from libcdio's paranoia engine to
+    /// this enum. The discriminants are defined to match libcdio's numbering 1:1.
+    pub fn from_raw(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Read),
+            1 => Some(Self::Verify),
+            2 => Some(Self::FixupEdge),
+            3 => Some(Self::FixupAtom),
+            4 => Some(Self::Scratch),
+            5 => Some(Self::Repair),
+            6 => Some(Self::Skip),
+            7 => Some(Self::Drift),
+            8 => Some(Self::Backoff),
+            9 => Some(Self::Overlap),
+            10 => Some(Self::FixupDropped),
+            11 => Some(Self::FixupDuped),
+            12 => Some(Self::ReadErr),
+            13 => Some(Self::CacheErr),
+            14 => Some(Self::Wrote),
+            15 => Some(Self::Finished),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ParanoiaHeuristicConfig {
     pub overlap_frames: usize,
     pub verify_overlap: bool,
+}
+
+/// Hook point matching upstream's edge-byte trimming step between the raw frame
+/// read and checksum/encode accumulation (see `cyanrip_read_frame`). Byte-level
+/// offset/overread boundary trimming for this track is computed by the caller
+/// before the read starts (see `apply_offset_frame_adjustment` in src/app.rs),
+/// so this is currently a pass-through kept at the same pipeline position.
+fn apply_offset_edge_trim(_frame_idx: usize, _frame_count: usize, frame: Vec<u8>) -> Vec<u8> {
+    frame
 }
 
 fn overlap_signature(frames: &[Vec<u8>], overlap_frames: usize) -> Option<(u32, u32)> {
@@ -238,13 +287,14 @@ where
                 events,
                 passes: pass,
                 callback_counters: counters,
+                final_frames: None,
             });
         }
 
         reader.seek_frame(start_lsn)?;
         let mut pass_frames = Vec::with_capacity(frame_count);
 
-        for _ in 0..frame_count {
+        for frame_idx in 0..frame_count {
             if should_interrupt() {
                 counters.increment(ParanoiaCallbackKind::Skip);
                 events.push(RipEvent::QuitRequested);
@@ -254,6 +304,7 @@ where
                     events,
                     passes: pass.saturating_add(1),
                     callback_counters: counters,
+                    final_frames: None,
                 });
             }
 
@@ -266,6 +317,7 @@ where
                     events,
                     passes: pass.saturating_add(1),
                     callback_counters: counters,
+                    final_frames: None,
                 });
             }
 
@@ -280,18 +332,23 @@ where
                         events,
                         passes: pass.saturating_add(1),
                         callback_counters: counters,
+                        final_frames: None,
                     });
                 }
 
                 counters.increment(ParanoiaCallbackKind::Read);
-                match reader.read_frame() {
+                let read_result = reader.read_frame();
+                if let Some(native) = reader.take_native_callback_counts() {
+                    counters.merge(&native);
+                }
+                match read_result {
                     Ok(frame) => {
                         events.push(RipEvent::FrameReadOk);
                         state = next_rip_state(state, RipEvent::FrameReadOk);
                         success = Some(frame);
                         break;
                     }
-                    Err(err) => {
+                    Err(_err) => {
                         counters.increment(ParanoiaCallbackKind::ReadErr);
                         counters.increment(ParanoiaCallbackKind::Backoff);
                         events.push(RipEvent::FrameReadError);
@@ -305,25 +362,36 @@ where
                                 events,
                                 passes: pass.saturating_add(1),
                                 callback_counters: counters,
+                                final_frames: None,
                             });
                         }
 
                         if attempt >= max_frame_retries {
-                            events.push(RipEvent::FatalDecodeOrEncodeError);
-                            return Err(err);
+                            // Matches upstream cyanrip_read_frame: an unrecoverable frame
+                            // does not fail the track, it is replaced with silence.
+                            events.push(RipEvent::FrameSubstitutedSilence);
+                            state = next_rip_state(state, RipEvent::FrameSubstitutedSilence);
+                            success = Some(vec![0u8; CDDA_FRAME_BYTES]);
+                            break;
                         }
                     }
                 }
             }
 
-            if let Some(frame) = success {
-                pass_frames.push(frame);
-            } else {
+            let Some(frame) = success else {
                 events.push(RipEvent::FatalDecodeOrEncodeError);
                 return Err(CddaReadError::ReadFailed(
                     "frame retries exhausted".to_string(),
                 ));
-            }
+            };
+
+            // Upstream applies offset/overread edge-byte trimming here, between the raw
+            // frame read and checksum/encode accumulation. Boundary trimming for this
+            // track is computed by the caller before the read starts (see
+            // apply_offset_frame_adjustment in src/app.rs), so this is a pass-through
+            // seam kept structurally in the same place as upstream's cyanrip_rip_track.
+            let frame = apply_offset_edge_trim(frame_idx, frame_count, frame);
+            pass_frames.push(frame);
         }
 
         let checksum = checksum_fn(pass, &pass_frames);
@@ -387,6 +455,7 @@ where
                     events,
                     passes: pass,
                     callback_counters: counters,
+                    final_frames: Some(pass_frames),
                 });
             }
             RetryDecision::RetryNow | RetryDecision::RetryAndStartEncoding => {
@@ -509,6 +578,7 @@ mod tests {
         assert!(out.events.contains(&RipEvent::RetryReady));
         assert!(out.events.contains(&RipEvent::ChecksumSatisfied));
         assert_eq!(out.callback_counters.get(ParanoiaCallbackKind::Finished), 1);
+        assert_eq!(out.final_frames.as_ref().map(Vec::len), Some(3));
     }
 
     #[test]
@@ -527,6 +597,28 @@ mod tests {
     }
 
     #[test]
+    fn run_track_substitutes_silence_when_frame_retries_are_exhausted() {
+        // Frames 0 and 1 succeed on their first read (calls 1 and 2), then frame 2's
+        // two read attempts land on calls 3 and 4; both fail, so retries are
+        // exhausted for that frame alone (upstream: substitute silence and continue
+        // instead of failing the whole track).
+        let mut r = FaultInjectedImageReader::new(sample_frames()).with_fail_on_attempts(&[3, 4]);
+        let mut policy = RetryPolicy::disabled();
+
+        let out = run_track_with_paranoia(&mut r, 0, 3, 1, &mut policy, |_pass, _| 7)
+            .expect("unrecoverable frame should not fail the track");
+
+        assert_eq!(out.state, RipState::TrackComplete);
+        assert!(out.events.contains(&RipEvent::FrameSubstitutedSilence));
+        assert!(!out.events.contains(&RipEvent::FatalDecodeOrEncodeError));
+        let frames = out.final_frames.expect("track should still finalize frames");
+        assert_eq!(frames.len(), 3);
+        assert_eq!(frames[2], vec![0u8; CDDA_FRAME_BYTES]);
+        assert_ne!(frames[0], vec![0u8; CDDA_FRAME_BYTES]);
+        assert_ne!(frames[1], vec![0u8; CDDA_FRAME_BYTES]);
+    }
+
+    #[test]
     fn run_track_aborts_when_media_changes() {
         let mut r = FaultInjectedImageReader::new(sample_frames()).with_media_change_at_attempt(2);
         let mut policy = RetryPolicy::disabled();
@@ -537,6 +629,7 @@ mod tests {
         assert_eq!(out.state, RipState::Aborted);
         assert!(out.events.contains(&RipEvent::MediaChanged));
         assert!(out.callback_counters.get(ParanoiaCallbackKind::Skip) >= 1);
+        assert!(out.final_frames.is_none());
     }
 
     #[test]

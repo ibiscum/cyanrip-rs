@@ -10,9 +10,7 @@ use crate::audio::flac::write_flac_file;
 use crate::audio::process::{TrackProcessingOptions, process_track_pcm};
 use crate::audio::wav::write_wav_file;
 use crate::audio::{PcmSpec, PcmTrackData, ProcessedPcmTrackData};
-use crate::cdda::paranoia::{RetryPolicy, RipState};
-#[cfg(all(target_os = "linux", feature = "cdda"))]
-use crate::cdda::paranoia::RipEvent;
+use crate::cdda::paranoia::{RetryPolicy, RipEvent, RipState};
 #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
 use crate::cdda::reader::CddaReadError;
 use crate::cdda::reader::run_track_with_paranoia_heuristics_interruptible;
@@ -524,6 +522,106 @@ fn accurip_v1_checksum(frame: &[u8]) -> u32 {
         sum = sum.wrapping_add(value.wrapping_mul((i as u32).wrapping_add(1)));
     }
     sum
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn accurip_v1_checksum_pcm(pcm: &PcmTrackData) -> u32 {
+    let mut sum = 0u32;
+    let mut word_index = 0u32;
+    let mut byte_buf = [0u8; 4];
+    let mut byte_count = 0usize;
+
+    for sample in &pcm.interleaved_i16_samples {
+        let bytes = sample.to_le_bytes();
+        for b in bytes {
+            byte_buf[byte_count] = b;
+            byte_count += 1;
+            if byte_count == 4 {
+                let value = u32::from_le_bytes(byte_buf);
+                sum = sum.wrapping_add(value.wrapping_mul(word_index.wrapping_add(1)));
+                word_index = word_index.wrapping_add(1);
+                byte_count = 0;
+            }
+        }
+    }
+
+    sum
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn track_accurip_confidence_for_pcm(
+    track_number: u32,
+    pcm: &PcmTrackData,
+    metadata_flow: Option<&MetadataFlowResult>,
+) -> Option<i32> {
+    let mf = metadata_flow?;
+    if mf.accurip_status != AccuDbStatus::Found {
+        return None;
+    }
+
+    let ar = mf.accurip.as_ref()?;
+    let idx = track_number.saturating_sub(1) as usize;
+    let matches = ar.track_matches.get(idx)?;
+    if matches.entries.is_empty() {
+        return None;
+    }
+
+    let checksum = accurip_v1_checksum_pcm(pcm);
+    track_accurip_confidence_for_checksum(track_number, checksum, metadata_flow)
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn track_accurip_confidence_for_checksum(
+    track_number: u32,
+    checksum: u32,
+    metadata_flow: Option<&MetadataFlowResult>,
+) -> Option<i32> {
+    let mf = metadata_flow?;
+    if mf.accurip_status != AccuDbStatus::Found {
+        return None;
+    }
+
+    let ar = mf.accurip.as_ref()?;
+    let idx = track_number.saturating_sub(1) as usize;
+    let matches = ar.track_matches.get(idx)?;
+    if matches.entries.is_empty() {
+        return None;
+    }
+
+    Some(find_accurip_confidence(
+        AccuDbStatus::Found,
+        &matches.entries,
+        checksum,
+        false,
+    ))
+}
+
+fn paranoia_run_did_not_converge(state: RipState, events: &[RipEvent]) -> bool {
+    if state != RipState::TrackComplete {
+        return true;
+    }
+    events.contains(&RipEvent::RetryLimitReached)
+}
+
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn accurip_v1_checksum_frames(frames: &[Vec<u8>]) -> u32 {
+    let mut sum = 0u32;
+    let mut idx = 0u32;
+    for frame in frames {
+        for word in frame.chunks_exact(4) {
+            let value = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+            sum = sum.wrapping_add(value.wrapping_mul(idx.wrapping_add(1)));
+            idx = idx.wrapping_add(1);
+        }
+    }
+    sum
+}
+
+#[derive(Debug, Clone)]
+struct TrackAcquisitionResult {
+    pcm: PcmTrackData,
+    #[allow(dead_code)]
+    accurip_confidence_from_paranoia_frames: Option<i32>,
 }
 
 #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
@@ -2096,7 +2194,9 @@ fn maybe_eject_after_success(settings: &Settings, source: FullRipSource) {
 }
 
 #[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
-fn maybe_eject_after_success(_settings: &Settings, _source: FullRipSource) {}
+fn maybe_eject_after_success(settings: &Settings, source: FullRipSource) {
+    let _ = should_attempt_eject_on_success(settings, source);
+}
 
 fn full_rip_source_from_settings(settings: &Settings) -> FullRipSource {
     match settings.dev_path.as_deref() {
@@ -2125,15 +2225,16 @@ fn acquire_track_pcm_from_physical_reader(
     frame_count: usize,
     start_lsn: i32,
     track_number: u32,
-) -> Result<PcmTrackData, RunWorkflowError> {
+    metadata_flow: Option<&MetadataFlowResult>,
+) -> Result<TrackAcquisitionResult, RunWorkflowError> {
     use crate::cdda::linux_drive::{open_linux_physical_drive, run_paranoia_on_linux_drive_with_defaults_for_level};
 
     let device_path = settings.dev_path.as_deref().or(Some("/dev/cdrom"));
 
     if settings.paranoia_level > 0 {
         println!(
-            "Paranoia precheck: track {} (level {}). Verifying read consistency before direct rip...",
-            track_number, settings.paranoia_level
+            "Ripping (paranoia level {}): track {}, {} frame(s)...",
+            settings.paranoia_level, track_number, frame_count
         );
 
         let mut retry_policy = if settings.ripping_retries > 0 {
@@ -2171,29 +2272,52 @@ fn acquire_track_pcm_from_physical_reader(
             )));
         }
 
-        if run.state == RipState::Aborted && run.events.contains(&RipEvent::MediaChanged) {
-            eprintln!(
-                "WARN physical paranoia precheck reported media-changed, continuing with direct read"
-            );
-        }
+        // The paranoia engine already performs jitter/error correction while
+        // reading, so its frames are the final PCM source directly -- there is
+        // no separate "direct read" step to fall back to (unlike a precheck).
+        let Some(frames) = run.final_frames.as_ref() else {
+            return Err(RunWorkflowError::Runtime(format!(
+                "physical paranoia run produced no finalized frames for track {}: state {:?}, retry-limit-reached {}",
+                track_number,
+                run.state,
+                run.events.contains(&RipEvent::RetryLimitReached)
+            )));
+        };
 
-        if run.state != RipState::TrackComplete {
+        let frame_confidence = track_accurip_confidence_for_checksum(
+            track_number,
+            accurip_v1_checksum_frames(frames),
+            metadata_flow,
+        );
+
+        if paranoia_run_did_not_converge(run.state, &run.events) {
             eprintln!(
-                "WARN physical paranoia run ended in state {:?}, continuing with direct read",
-                run.state
+                "WARN paranoia read for track {} did not fully converge (state {:?}); using best-effort corrected frames",
+                track_number, run.state
             );
         }
 
         println!(
-            "Paranoia precheck complete for track {} (passes: {}, state: {:?}). Starting direct read...",
-            track_number, run.passes, run.state
+            "Paranoia read complete for track {} (passes: {}, state: {:?}); AccurateRip confidence: {}",
+            track_number,
+            run.passes,
+            run.state,
+            match frame_confidence {
+                Some(v) => v.to_string(),
+                None => "n/a".to_string(),
+            }
         );
-    } else {
-        println!(
-            "Paranoia disabled; starting direct drive read for track {}...",
-            track_number
-        );
+
+        return Ok(TrackAcquisitionResult {
+            pcm: pcm_from_cdda_frames(frames),
+            accurip_confidence_from_paranoia_frames: frame_confidence,
+        });
     }
+
+    println!(
+        "Paranoia disabled; starting direct drive read for track {}...",
+        track_number
+    );
 
     let mut reader = open_linux_physical_drive(device_path).map_err(|e| {
         RunWorkflowError::Runtime(format!("physical drive open failed: {e:?}"))
@@ -2244,13 +2368,16 @@ fn acquire_track_pcm_from_physical_reader(
 
     println!();
 
-    Ok(PcmTrackData {
-        spec: PcmSpec {
-            channels: 2,
-            sample_rate: 44_100,
-            bits_per_sample: 16,
+    Ok(TrackAcquisitionResult {
+        pcm: PcmTrackData {
+            spec: PcmSpec {
+                channels: 2,
+                sample_rate: 44_100,
+                bits_per_sample: 16,
+            },
+            interleaved_i16_samples: samples,
         },
-        interleaved_i16_samples: samples,
+        accurip_confidence_from_paranoia_frames: None,
     })
 }
 
@@ -2260,7 +2387,8 @@ fn acquire_track_pcm_from_physical_reader(
     _frame_count: usize,
     _start_lsn: i32,
     _track_number: u32,
-) -> Result<PcmTrackData, RunWorkflowError> {
+    _metadata_flow: Option<&MetadataFlowResult>,
+) -> Result<TrackAcquisitionResult, RunWorkflowError> {
     Err(RunWorkflowError::Runtime(
         "physical drive reader requires linux + cdda feature support".to_string(),
     ))
@@ -2425,6 +2553,27 @@ fn add_silence_padding(
     out.extend(std::iter::repeat_n(0i16, after_samples));
     pcm.interleaved_i16_samples = out;
     pcm
+}
+
+fn pcm_from_cdda_frames(frames: &[Vec<u8>]) -> PcmTrackData {
+    let mut samples = Vec::new();
+    for frame in frames {
+        let mut off = 0usize;
+        while off + 1 < frame.len() {
+            let v = i16::from_le_bytes([frame[off], frame[off + 1]]);
+            samples.push(v);
+            off += 2;
+        }
+    }
+
+    PcmTrackData {
+        spec: PcmSpec {
+            channels: 2,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+        },
+        interleaved_i16_samples: samples,
+    }
 }
 
 #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
@@ -2785,7 +2934,7 @@ fn resolve_track_boundaries(
 fn acquire_tracks_pcm_from_image_reader(
     settings: &Settings,
     plans: &[TrackReadPlan],
-) -> Result<Vec<(u32, PcmTrackData)>, RunWorkflowError> {
+) -> Result<Vec<(u32, TrackAcquisitionResult)>, RunWorkflowError> {
     let max_frame_end = plans
         .iter()
         .map(|b| (b.read_start_lsn.max(0) as usize).saturating_add(b.read_frame_count))
@@ -2799,6 +2948,7 @@ fn acquire_tracks_pcm_from_image_reader(
     for plan in plans {
         let start_lsn = plan.read_start_lsn;
         let frame_count = plan.read_frame_count;
+        let mut paranoia_fallback_pcm: Option<PcmTrackData> = None;
 
         if settings.paranoia_level > 0 && frame_count > 0 {
             let mut retry_policy = if settings.ripping_retries > 0 {
@@ -2833,15 +2983,21 @@ fn acquire_tracks_pcm_from_image_reader(
                 RunWorkflowError::Runtime(format!("image paranoia run failed: {e:?}"))
             })?;
 
-            if run.state != RipState::TrackComplete {
-                return Err(RunWorkflowError::Runtime(format!(
-                    "image paranoia run did not complete track: {:?}",
-                    run.state
-                )));
+            if paranoia_run_did_not_converge(run.state, &run.events) {
+                if let Some(frames) = run.final_frames.as_ref() {
+                    paranoia_fallback_pcm = Some(pcm_from_cdda_frames(frames));
+                } else {
+                    return Err(RunWorkflowError::Runtime(format!(
+                        "image paranoia run did not complete track: {:?}",
+                        run.state
+                    )));
+                }
             }
         }
 
-        let pcm = if frame_count > 0 {
+        let pcm = if let Some(pcm) = paranoia_fallback_pcm {
+            pcm
+        } else if frame_count > 0 {
             acquire_track_pcm_from_reader(&mut reader, start_lsn, frame_count)?
         } else {
             PcmTrackData {
@@ -2854,7 +3010,13 @@ fn acquire_tracks_pcm_from_image_reader(
             }
         };
         let pcm = add_silence_padding(pcm, plan.silence_before_frames, plan.silence_after_frames);
-        out.push((plan.track_number, pcm));
+        out.push((
+            plan.track_number,
+            TrackAcquisitionResult {
+                pcm,
+                accurip_confidence_from_paranoia_frames: None,
+            },
+        ));
     }
 
     Ok(out)
@@ -2863,31 +3025,41 @@ fn acquire_tracks_pcm_from_image_reader(
 fn acquire_tracks_pcm_from_physical_reader(
     settings: &Settings,
     plans: &[TrackReadPlan],
-) -> Result<Vec<(u32, PcmTrackData)>, RunWorkflowError> {
+    metadata_flow: Option<&MetadataFlowResult>,
+) -> Result<Vec<(u32, TrackAcquisitionResult)>, RunWorkflowError> {
     let mut out = Vec::with_capacity(plans.len());
     for plan in plans {
         let start_lsn = plan.read_start_lsn;
         let frame_count = plan.read_frame_count;
 
-        let pcm = if frame_count > 0 {
+        let acquired = if frame_count > 0 {
             acquire_track_pcm_from_physical_reader(
                 settings,
                 frame_count,
                 start_lsn,
                 plan.track_number,
+                metadata_flow,
             )?
         } else {
-            PcmTrackData {
-                spec: PcmSpec {
-                    channels: 2,
-                    sample_rate: 44_100,
-                    bits_per_sample: 16,
+            TrackAcquisitionResult {
+                pcm: PcmTrackData {
+                    spec: PcmSpec {
+                        channels: 2,
+                        sample_rate: 44_100,
+                        bits_per_sample: 16,
+                    },
+                    interleaved_i16_samples: Vec::new(),
                 },
-                interleaved_i16_samples: Vec::new(),
+                accurip_confidence_from_paranoia_frames: None,
             }
         };
-        let pcm = add_silence_padding(pcm, plan.silence_before_frames, plan.silence_after_frames);
-        out.push((plan.track_number, pcm));
+        let mut acquired = acquired;
+        acquired.pcm = add_silence_padding(
+            acquired.pcm,
+            plan.silence_before_frames,
+            plan.silence_after_frames,
+        );
+        out.push((plan.track_number, acquired));
     }
     Ok(out)
 }
@@ -3102,66 +3274,153 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
 
     let mut written_files = Vec::new();
     let mut benchmarks = Vec::new();
+    // Encoding/writing a track's PCM (CPU-bound) is dispatched to a background
+    // thread per track so the next track's disc read can start immediately
+    // instead of waiting for the previous track's encode to finish.
+    let mut encode_handles: Vec<std::thread::JoinHandle<Result<TrackOutputFlowResult, String>>> =
+        Vec::new();
     for boundary in &read_plans {
         let track_started = Instant::now();
-        let pcm = match source {
-            FullRipSource::Image => acquire_tracks_pcm_from_image_reader(
-                settings,
-                std::slice::from_ref(boundary),
-            )?
-            .into_iter()
-            .next()
-            .map(|(_, pcm)| pcm)
-            .ok_or_else(|| {
-                RunWorkflowError::Runtime(format!(
-                    "image track acquisition returned no PCM for track {}",
-                    boundary.track_number
-                ))
-            })?,
-            FullRipSource::Physical => acquire_tracks_pcm_from_physical_reader(
-                settings,
-                std::slice::from_ref(boundary),
-            )?
-            .into_iter()
-            .next()
-            .map(|(_, pcm)| pcm)
-            .ok_or_else(|| {
-                RunWorkflowError::Runtime(format!(
-                    "physical track acquisition returned no PCM for track {}",
-                    boundary.track_number
-                ))
-            })?,
+        #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+        let mut track_attempt = 0u32;
+        #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+        let max_track_attempts = settings.max_retries.max(1) as u32;
+        let pcm = loop {
+            #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+            {
+                track_attempt = track_attempt.saturating_add(1);
+                println!(
+                    "Track {} read attempt {} of {}...",
+                    boundary.track_number, track_attempt, max_track_attempts
+                );
+            }
+            let acquired = match source {
+                FullRipSource::Image => acquire_tracks_pcm_from_image_reader(
+                    settings,
+                    std::slice::from_ref(boundary),
+                )?
+                .into_iter()
+                .next()
+                .map(|(_, acquired)| acquired)
+                .ok_or_else(|| {
+                    RunWorkflowError::Runtime(format!(
+                        "image track acquisition returned no PCM for track {}",
+                        boundary.track_number
+                    ))
+                })?,
+                FullRipSource::Physical => acquire_tracks_pcm_from_physical_reader(
+                    settings,
+                    std::slice::from_ref(boundary),
+                    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+                    metadata_flow.as_ref(),
+                    #[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+                    None,
+                )?
+                .into_iter()
+                .next()
+                .map(|(_, acquired)| acquired)
+                .ok_or_else(|| {
+                    RunWorkflowError::Runtime(format!(
+                        "physical track acquisition returned no PCM for track {}",
+                        boundary.track_number
+                    ))
+                })?,
+            };
+
+            #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+            {
+                let conf = acquired
+                    .accurip_confidence_from_paranoia_frames
+                    .or_else(|| {
+                        track_accurip_confidence_for_pcm(
+                            boundary.track_number,
+                            &acquired.pcm,
+                            metadata_flow.as_ref(),
+                        )
+                    });
+                match conf {
+                    Some(v) if v > 0 => println!(
+                        "AccurateRip verified for track {} on attempt {} with confidence {}.",
+                        boundary.track_number, track_attempt, v
+                    ),
+                    Some(0) => println!(
+                        "AccurateRip status found but confidence is 0 for track {} on attempt {}.",
+                        boundary.track_number, track_attempt
+                    ),
+                    None => println!(
+                        "AccurateRip verification unavailable for track {} on attempt {}.",
+                        boundary.track_number, track_attempt
+                    ),
+                    _ => {}
+                }
+                if conf == Some(-1) {
+                    if track_attempt < max_track_attempts {
+                        println!(
+                            "AccurateRip mismatch on track {} (attempt {} of {}), retrying track read...",
+                            boundary.track_number,
+                            track_attempt,
+                            max_track_attempts
+                        );
+                        continue;
+                    }
+                    eprintln!(
+                        "ERROR AccurateRip mismatch persisted on track {} after {} attempt(s); failing exact-rip enforcement.",
+                        boundary.track_number,
+                        track_attempt
+                    );
+                    return Err(RunWorkflowError::Runtime(format!(
+                        "AccurateRip mismatch persisted on track {} after {} attempt(s)",
+                        boundary.track_number, track_attempt
+                    )));
+                }
+            }
+
+            break acquired.pcm;
         };
         let pcm_bytes = pcm
             .interleaved_i16_samples
             .len()
             .saturating_mul(std::mem::size_of::<i16>());
 
-        let track_meta = track_meta_for_number(boundary.track_number, &track_meta_map);
-        let result = write_track_outputs_with_naming_tracks(
-            TrackOutputFlowInput {
-                settings: settings.clone(),
-                output_root: output_root.clone(),
-                album_meta: album_meta.clone(),
-                cover_arts: cover_arts_for_write.clone(),
-                tracks: vec![TrackOutputInput {
-                    track_number: boundary.track_number,
-                    track_meta,
-                    pcm,
-                }],
-            },
-            naming_track_count,
-            false,
-            Some(boundary.track_number),
-        )
-        .map_err(|e| RunWorkflowError::Runtime(format!("full-rip writer flow failed: {e}")))?;
-        written_files.extend(result.written_files);
+        // Benchmark covers read + AccurateRip verification only; encode/write now
+        // happens concurrently with subsequent tracks' reads (see encode_handles).
         benchmarks.push(TrackBenchmark {
             track_number: boundary.track_number,
             elapsed_ms: track_started.elapsed().as_millis(),
             pcm_bytes,
             rss_kib_after: current_rss_kib(),
         });
+
+        let track_meta = track_meta_for_number(boundary.track_number, &track_meta_map);
+        let encode_input = TrackOutputFlowInput {
+            settings: settings.clone(),
+            output_root: output_root.clone(),
+            album_meta: album_meta.clone(),
+            cover_arts: cover_arts_for_write.clone(),
+            tracks: vec![TrackOutputInput {
+                track_number: boundary.track_number,
+                track_meta,
+                pcm,
+            }],
+        };
+        let track_number = boundary.track_number;
+        encode_handles.push(std::thread::spawn(move || {
+            write_track_outputs_with_naming_tracks(
+                encode_input,
+                naming_track_count,
+                false,
+                Some(track_number),
+            )
+            .map_err(|e| format!("full-rip writer flow failed: {e}"))
+        }));
+    }
+
+    for handle in encode_handles {
+        let result = handle
+            .join()
+            .map_err(|_| RunWorkflowError::Runtime("track encode thread panicked".to_string()))?
+            .map_err(RunWorkflowError::Runtime)?;
+        written_files.extend(result.written_files);
     }
 
     let mut out = String::new();
@@ -4398,6 +4657,32 @@ mod tests {
 
     #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
     #[test]
+    #[ignore = "requires a real optical drive and an audio CD inserted beforehand"]
+    fn should_attempt_eject_on_success_with_audio_cd_inserted() {
+        use crate::cdda::linux_drive::read_drive_toc_tracks;
+
+        let device = std::env::var("CYANRIP_CDROM_DEVICE")
+            .unwrap_or_else(|_| "/dev/cdrom".to_string());
+
+        let toc = read_drive_toc_tracks(Some(&device)).unwrap_or_else(|err| {
+            panic!("failed to read TOC from {device}: {err:?}");
+        });
+        assert!(
+            !toc.is_empty(),
+            "no TOC tracks found on {device}; ensure an audio CD is inserted beforehand"
+        );
+
+        let settings = Settings {
+            dev_path: Some(device),
+            eject_on_success_rip: true,
+            ..Settings::default()
+        };
+
+        assert!(should_attempt_eject_on_success(&settings, FullRipSource::Physical));
+    }
+
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    #[test]
     fn toc_preflight_mapper_returns_clear_no_medium_message() {
         let err = crate::cdda::reader::CddaReadError::ReadFailed(
             "invalid TOC values returned by drive".to_string(),
@@ -4800,6 +5085,44 @@ mod tests {
         assert_eq!(plan.silence_before_frames, 0);
         assert_eq!(plan.silence_after_frames, 0);
         assert_eq!(plan.frame_count, 101);
+    }
+
+    #[cfg(all(target_os = "linux", feature = "cdda"))]
+    #[test]
+    fn paranoia_precheck_treats_retry_limit_as_failure() {
+        assert!(paranoia_run_did_not_converge(
+            RipState::TrackComplete,
+            &[RipEvent::RetryLimitReached]
+        ));
+        assert!(paranoia_run_did_not_converge(RipState::Aborted, &[]));
+        assert!(!paranoia_run_did_not_converge(
+            RipState::TrackComplete,
+            &[RipEvent::ChecksumSatisfied]
+        ));
+    }
+
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    #[test]
+    fn accurip_pcm_checksum_matches_word_weighted_formula() {
+        let bytes = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        let mut samples = Vec::new();
+        for pair in bytes.chunks_exact(2) {
+            samples.push(i16::from_le_bytes([pair[0], pair[1]]));
+        }
+
+        let pcm = PcmTrackData {
+            spec: PcmSpec {
+                channels: 2,
+                sample_rate: 44_100,
+                bits_per_sample: 16,
+            },
+            interleaved_i16_samples: samples,
+        };
+
+        let expected = u32::from_le_bytes([1, 2, 3, 4]).wrapping_mul(1).wrapping_add(
+            u32::from_le_bytes([5, 6, 7, 8]).wrapping_mul(2),
+        );
+        assert_eq!(accurip_v1_checksum_pcm(&pcm), expected);
     }
 
     #[test]
