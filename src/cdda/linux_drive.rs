@@ -39,7 +39,15 @@ pub trait LinuxDriveBackend {
 }
 
 pub fn media_changed_from_code(code: i32, unsupported_code: i32) -> bool {
-    code != 0 && code != unsupported_code
+    // Only a strictly positive code is a real "media changed" signal.
+    // Drivers report a variety of negative driver_return_code_t error values
+    // (unsupported, error, uninit, ...) when the query fails or isn't
+    // supported; treating every such value as "changed" (matching only the
+    // specific `unsupported_code` sentinel) caused real drives that return a
+    // different negative error (e.g. DRIVER_OP_ERROR) to spuriously abort
+    // in-progress rips as if the disc had been swapped.
+    let _ = unsupported_code;
+    code > 0
 }
 
 pub struct LinuxPhysicalDriveReader<B: LinuxDriveBackend> {
@@ -908,6 +916,17 @@ mod tests {
         assert!(!media_changed_from_code(0, -2));
         assert!(!media_changed_from_code(-2, -2));
         assert!(media_changed_from_code(1, -2));
+    }
+
+    #[test]
+    fn media_changed_treats_any_negative_driver_error_as_not_changed() {
+        // Real drives report a variety of negative driver_return_code_t values
+        // (DRIVER_OP_ERROR = -1, DRIVER_OP_UNINIT = -3, etc.) when the media-changed
+        // query fails or isn't supported, not just the specific "unsupported" sentinel.
+        // None of these should be mistaken for an actual media change.
+        assert!(!media_changed_from_code(-1, -2));
+        assert!(!media_changed_from_code(-3, -2));
+        assert!(!media_changed_from_code(-8, -2));
     }
 
     #[test]

@@ -525,27 +525,18 @@ fn accurip_v1_checksum(frame: &[u8]) -> u32 {
 }
 
 #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
-fn accurip_v1_checksum_pcm(pcm: &PcmTrackData) -> u32 {
-    let mut sum = 0u32;
-    let mut word_index = 0u32;
-    let mut byte_buf = [0u8; 4];
-    let mut byte_count = 0usize;
-
+fn accurip_v1_checksum_pcm(pcm: &PcmTrackData, is_first_track: bool, is_last_track: bool) -> u32 {
+    // Real AccurateRip v1 checksums trim the first/last 5 frames of the
+    // disc's first/last track; reuse the verified fun512::ChecksumCtx logic
+    // instead of a naive whole-track weighted sum.
+    let nb_samples = (pcm.interleaved_i16_samples.len() / 2) as u32;
+    let mut ctx = crate::fun512::ChecksumCtx::new(nb_samples, is_first_track, is_last_track);
+    let mut buf = Vec::with_capacity(pcm.interleaved_i16_samples.len().saturating_mul(2));
     for sample in &pcm.interleaved_i16_samples {
-        let bytes = sample.to_le_bytes();
-        for b in bytes {
-            byte_buf[byte_count] = b;
-            byte_count += 1;
-            if byte_count == 4 {
-                let value = u32::from_le_bytes(byte_buf);
-                sum = sum.wrapping_add(value.wrapping_mul(word_index.wrapping_add(1)));
-                word_index = word_index.wrapping_add(1);
-                byte_count = 0;
-            }
-        }
+        buf.extend_from_slice(&sample.to_le_bytes());
     }
-
-    sum
+    ctx.process_bytes(&buf);
+    ctx.finalize().accurip_checksum_v1
 }
 
 #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
@@ -566,7 +557,9 @@ fn track_accurip_confidence_for_pcm(
         return None;
     }
 
-    let checksum = accurip_v1_checksum_pcm(pcm);
+    let is_first_track = track_number == 1;
+    let is_last_track = track_number as usize == ar.track_matches.len();
+    let checksum = accurip_v1_checksum_pcm(pcm, is_first_track, is_last_track);
     track_accurip_confidence_for_checksum(track_number, checksum, metadata_flow)
 }
 
@@ -601,20 +594,6 @@ fn paranoia_run_did_not_converge(state: RipState, events: &[RipEvent]) -> bool {
         return true;
     }
     events.contains(&RipEvent::RetryLimitReached)
-}
-
-#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
-fn accurip_v1_checksum_frames(frames: &[Vec<u8>]) -> u32 {
-    let mut sum = 0u32;
-    let mut idx = 0u32;
-    for frame in frames {
-        for word in frame.chunks_exact(4) {
-            let value = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
-            sum = sum.wrapping_add(value.wrapping_mul(idx.wrapping_add(1)));
-            idx = idx.wrapping_add(1);
-        }
-    }
-    sum
 }
 
 #[derive(Debug, Clone)]
@@ -2225,7 +2204,7 @@ fn acquire_track_pcm_from_physical_reader(
     frame_count: usize,
     start_lsn: i32,
     track_number: u32,
-    metadata_flow: Option<&MetadataFlowResult>,
+    _metadata_flow: Option<&MetadataFlowResult>,
 ) -> Result<TrackAcquisitionResult, RunWorkflowError> {
     use crate::cdda::linux_drive::{open_linux_physical_drive, run_paranoia_on_linux_drive_with_defaults_for_level};
 
@@ -2284,12 +2263,6 @@ fn acquire_track_pcm_from_physical_reader(
             )));
         };
 
-        let frame_confidence = track_accurip_confidence_for_checksum(
-            track_number,
-            accurip_v1_checksum_frames(frames),
-            metadata_flow,
-        );
-
         if paranoia_run_did_not_converge(run.state, &run.events) {
             eprintln!(
                 "WARN paranoia read for track {} did not fully converge (state {:?}); using best-effort corrected frames",
@@ -2298,19 +2271,18 @@ fn acquire_track_pcm_from_physical_reader(
         }
 
         println!(
-            "Paranoia read complete for track {} (passes: {}, state: {:?}); AccurateRip confidence: {}",
+            "Paranoia read complete for track {} (passes: {}, state: {:?})",
             track_number,
             run.passes,
             run.state,
-            match frame_confidence {
-                Some(v) => v.to_string(),
-                None => "n/a".to_string(),
-            }
         );
 
         return Ok(TrackAcquisitionResult {
             pcm: pcm_from_cdda_frames(frames),
-            accurip_confidence_from_paranoia_frames: frame_confidence,
+            // AccurateRip confidence requires the drive-offset-corrected pcm,
+            // which is only available to the caller after cropping; see
+            // apply_drive_offset_crop and track_accurip_confidence_for_pcm.
+            accurip_confidence_from_paranoia_frames: None,
         });
     }
 
@@ -2474,6 +2446,10 @@ struct TrackReadPlan {
     read_frame_count: usize,
     silence_before_frames: usize,
     silence_after_frames: usize,
+    // Pre-offset-adjustment TOC boundary, needed to crop the offset-shifted
+    // (frame-rounded) read window down to the disc's true sample-accurate track length.
+    original_start_lsn: i32,
+    original_frame_count: usize,
 }
 
 fn plan_track_read(
@@ -2515,6 +2491,8 @@ fn plan_track_read(
         read_frame_count,
         silence_before_frames,
         silence_after_frames,
+        original_start_lsn: boundary.start_lsn,
+        original_frame_count: boundary.frame_count,
     }
 }
 
@@ -2552,6 +2530,39 @@ fn add_silence_padding(
     out.extend_from_slice(&pcm.interleaved_i16_samples);
     out.extend(std::iter::repeat_n(0i16, after_samples));
     pcm.interleaved_i16_samples = out;
+    pcm
+}
+
+/// Applies the fine (sub-frame) sample-accurate drive-offset correction that
+/// `apply_offset_frame_adjustment` cannot express: that function only grows the
+/// read window by whole CD frames, so callers must crop the result back down
+/// to the disc's true track length at the exact sample offset. Without this
+/// step, ripped audio is a whole frame longer/misaligned and never matches
+/// AccurateRip checksums (or upstream cyanrip's/EAC's output) for any offset
+/// that isn't a multiple of 588 samples.
+fn apply_drive_offset_crop(mut pcm: PcmTrackData, plan: &TrackReadPlan, offset_samples: i32) -> PcmTrackData {
+    const I16_PER_CD_FRAME: i64 = (CDDA_FRAME_BYTES / 2) as i64;
+
+    let crop_start = (plan.original_start_lsn as i64 - plan.start_lsn as i64)
+        .saturating_mul(I16_PER_CD_FRAME)
+        .saturating_add((offset_samples as i64).saturating_mul(2));
+    let crop_len = (plan.original_frame_count as i64).saturating_mul(I16_PER_CD_FRAME);
+
+    let total = pcm.interleaved_i16_samples.len() as i64;
+    let start = crop_start.clamp(0, total);
+    let end = start.saturating_add(crop_len).clamp(0, total);
+
+    let mut cropped: Vec<i16> = if start < end {
+        pcm.interleaved_i16_samples[start as usize..end as usize].to_vec()
+    } else {
+        Vec::new()
+    };
+    // Defensive: keep the output at the disc's true track length even if the
+    // computed offset window ran past the available (padded) sample buffer.
+    if (cropped.len() as i64) < crop_len {
+        cropped.resize(crop_len.max(0) as usize, 0);
+    }
+    pcm.interleaved_i16_samples = cropped;
     pcm
 }
 
@@ -3010,6 +3021,7 @@ fn acquire_tracks_pcm_from_image_reader(
             }
         };
         let pcm = add_silence_padding(pcm, plan.silence_before_frames, plan.silence_after_frames);
+        let pcm = apply_drive_offset_crop(pcm, plan, settings.offset);
         out.push((
             plan.track_number,
             TrackAcquisitionResult {
@@ -3059,6 +3071,10 @@ fn acquire_tracks_pcm_from_physical_reader(
             plan.silence_before_frames,
             plan.silence_after_frames,
         );
+        acquired.pcm = apply_drive_offset_crop(acquired.pcm, plan, settings.offset);
+        // The confidence above was computed on the raw, pre-crop read; the
+        // corrected pcm must be re-checked against AccuRip by the caller.
+        acquired.accurip_confidence_from_paranoia_frames = None;
         out.push((plan.track_number, acquired));
     }
     Ok(out)
@@ -3155,6 +3171,17 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
                     &cover_service,
                     &ar_service,
                 ));
+
+                if let Some(candidates) = mf.musicbrainz_release_choices.as_ref() {
+                    let discid_str = mf
+                        .discid
+                        .as_ref()
+                        .map(|d| d.musicbrainz_discid.as_str())
+                        .unwrap_or("");
+                    return Err(RunWorkflowError::Runtime(
+                        format_musicbrainz_multiple_releases_message(discid_str, candidates),
+                    ));
+                }
 
                 if let Some(release) = mf.musicbrainz.as_ref()
                     && let Some(album_artist) = release.album_artist.as_deref()
@@ -3625,6 +3652,8 @@ pub struct MetadataFlowResult {
     pub accurip_status: AccuDbStatus,
     pub accurip: Option<AccuRipLookupResult>,
     pub warnings: Vec<String>,
+    /// Set when MusicBrainz found multiple releases and no -R selector was given.
+    pub musicbrainz_release_choices: Option<Vec<ReleaseSummary>>,
 }
 
 #[async_trait]
@@ -3755,6 +3784,7 @@ where
     };
 
     let mut musicbrainz_meta = None;
+    let mut musicbrainz_release_choices = None;
     if !input.settings.disable_mb {
         if let Some(d) = &discid {
             match musicbrainz
@@ -3767,6 +3797,13 @@ where
                 .await
             {
                 Ok(v) => musicbrainz_meta = Some(v),
+                Err(MusicBrainzError::MultipleReleases(candidates)) => {
+                    warnings.push(
+                        "musicbrainz lookup failed: multiple releases found, use -R to select one"
+                            .to_string(),
+                    );
+                    musicbrainz_release_choices = Some(candidates);
+                }
                 Err(e) => warnings.push(format!("musicbrainz lookup failed: {e:?}")),
             }
         } else {
@@ -3811,6 +3848,7 @@ where
                         accurip_status,
                         accurip: accurip_result,
                         warnings,
+                        musicbrainz_release_choices,
                     };
                 }
             };
@@ -3826,6 +3864,7 @@ where
                         accurip_status,
                         accurip: accurip_result,
                         warnings,
+                        musicbrainz_release_choices,
                     };
                 }
                 ar_tracks.push(AccuRipTrackInput {
@@ -3858,6 +3897,7 @@ where
         accurip_status,
         accurip: accurip_result,
         warnings,
+        musicbrainz_release_choices,
     }
 }
 
@@ -4933,9 +4973,12 @@ mod tests {
 
     #[test]
     fn run_workflow_cue_only_mode_returns_preview() {
+        // disable_mb keeps this deterministic; it doesn't test MusicBrainz behavior
+        // and was previously flaky against the real MusicBrainz service (see repo memory).
         let settings = Settings {
             generate_cue_only: true,
             offset_is_set: true,
+            disable_mb: true,
             album_metadata: Some("album=Example Album:album_artist=Example Artist".to_string()),
             track_metadata: vec![
                 "1=title=Intro:artist=Example Artist".to_string(),
@@ -4957,7 +5000,7 @@ mod tests {
             }
             Err(RunWorkflowError::Runtime(msg)) => {
                 assert!(
-                    msg.contains("TOC read failed") || msg.contains("musicbrainz lookup failed"),
+                    msg.contains("TOC read failed"),
                     "unexpected cue-only runtime error: {msg}"
                 );
             }
@@ -5046,6 +5089,51 @@ mod tests {
     }
 
     #[test]
+    fn apply_drive_offset_crop_realigns_samples_by_exact_sample_offset() {
+        // Regression test for a real bug: apply_offset_frame_adjustment only
+        // grows the read window by whole CD frames, so the sub-frame sample
+        // shift must be cropped out afterward or ripped audio is a whole
+        // frame too long/misaligned and never matches AccurateRip.
+        let boundary = TrackBoundary {
+            track_number: 1,
+            start_lsn: 100,
+            frame_count: 10,
+        };
+        let offset = 103;
+        let settings = Settings {
+            offset,
+            over_under_read_frames: crate::calc_over_under_read_frames(offset),
+            overread_leadinout: true,
+            ..Settings::default()
+        };
+        let plan = plan_track_read(boundary, &settings, 0, 100_000);
+        assert_eq!(plan.frame_count, 11, "positive sub-frame offset should overread by one whole frame");
+        assert_eq!(plan.original_frame_count, 10);
+
+        let i16_per_cd_frame = CDDA_FRAME_BYTES / 2;
+        let total_i16 = plan.frame_count * i16_per_cd_frame;
+        let samples: Vec<i16> = (0..total_i16).map(|i| i as i16).collect();
+        let pcm = PcmTrackData {
+            spec: PcmSpec {
+                channels: 2,
+                sample_rate: 44_100,
+                bits_per_sample: 16,
+            },
+            interleaved_i16_samples: samples,
+        };
+
+        let cropped = apply_drive_offset_crop(pcm, &plan, offset);
+        let expected_len = plan.original_frame_count * i16_per_cd_frame;
+        assert_eq!(cropped.interleaved_i16_samples.len(), expected_len);
+        // offset (103) samples * 2 i16 channels = 206 i16 elements skipped from the front.
+        assert_eq!(cropped.interleaved_i16_samples[0], 206);
+        assert_eq!(
+            *cropped.interleaved_i16_samples.last().unwrap(),
+            (206 + expected_len - 1) as i16
+        );
+    }
+
+    #[test]
     fn plan_track_read_clips_and_adds_silence_when_overread_disabled() {
         let boundary = TrackBoundary {
             track_number: 1,
@@ -5122,7 +5210,37 @@ mod tests {
         let expected = u32::from_le_bytes([1, 2, 3, 4]).wrapping_mul(1).wrapping_add(
             u32::from_le_bytes([5, 6, 7, 8]).wrapping_mul(2),
         );
-        assert_eq!(accurip_v1_checksum_pcm(&pcm), expected);
+        assert_eq!(accurip_v1_checksum_pcm(&pcm, false, false), expected);
+    }
+
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    #[test]
+    fn accurip_pcm_checksum_trims_first_and_last_track_boundary_frames() {
+        // AccurateRip v1 skips the first 5 frames of the first track and the
+        // last 5 frames of the last track; a value placed inside the trimmed
+        // region must not influence the checksum.
+        let samples_per_frame = CDDA_FRAME_BYTES / 4;
+        let untrimmed_words = samples_per_frame * 6; // one extra word beyond the trimmed region
+        let mut samples = Vec::new();
+        for w in 0..untrimmed_words {
+            samples.push(w as i16);
+            samples.push(0i16);
+        }
+        let pcm = PcmTrackData {
+            spec: PcmSpec {
+                channels: 2,
+                sample_rate: 44_100,
+                bits_per_sample: 16,
+            },
+            interleaved_i16_samples: samples,
+        };
+
+        let checksum_first_track = accurip_v1_checksum_pcm(&pcm, true, false);
+        let checksum_middle_track = accurip_v1_checksum_pcm(&pcm, false, false);
+        assert_ne!(
+            checksum_first_track, checksum_middle_track,
+            "trimming the first-track lead-in must change the checksum"
+        );
     }
 
     #[test]
@@ -5530,6 +5648,63 @@ FILE "disc.bin" BINARY
         assert!(out.warnings.iter().any(|w| w.contains("musicbrainz lookup failed")));
         assert_eq!(cover_ids.lock().expect("lock").clone(), vec![None]);
         assert_eq!(out.accurip_status, AccuDbStatus::Found);
+    }
+
+    #[tokio::test]
+    async fn surfaces_musicbrainz_multiple_releases_choice_instead_of_ripping_blind() {
+        let cover_ids = Arc::new(Mutex::new(Vec::new()));
+        let candidates = vec![
+            ReleaseSummary {
+                id: "rel-a".to_string(),
+                album: "Album A".to_string(),
+                disambiguation: None,
+                country: Some("GB".to_string()),
+                date: Some("2010-06-07".to_string()),
+                num_cds: 1,
+            },
+            ReleaseSummary {
+                id: "rel-b".to_string(),
+                album: "Album B".to_string(),
+                disambiguation: None,
+                country: Some("US".to_string()),
+                date: Some("2010-07-13".to_string()),
+                num_cds: 1,
+            },
+        ];
+        let mb = MbMock {
+            called: Arc::new(Mutex::new(0usize)),
+            result: Err(MusicBrainzError::MultipleReleases(candidates.clone())),
+        };
+        let cover = CoverMock {
+            called: Arc::new(Mutex::new(0usize)),
+            release_ids: cover_ids.clone(),
+        };
+        let ar = ArMock {
+            called: Arc::new(Mutex::new(0usize)),
+            result: Ok(ar_ok()),
+        };
+
+        let input = MetadataFlowInput {
+            settings: Settings::default(),
+            tracks: test_tracks(),
+            info_only: false,
+            initial_cover_arts: Vec::new(),
+        };
+
+        let out = orchestrate_metadata_flow(input, &mb, &cover, &ar).await;
+
+        // No release must be silently assumed when disambiguation is required.
+        assert!(out.musicbrainz.is_none());
+        assert_eq!(out.musicbrainz_release_choices, Some(candidates));
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w| w.contains("multiple releases found") && w.contains("-R")),
+            "expected multiple-releases warning; got {:?}",
+            out.warnings
+        );
+        // Cover art/accurip lookups still proceed using no release id, matching other lookup failures.
+        assert_eq!(cover_ids.lock().expect("lock").clone(), vec![None]);
     }
 
     #[tokio::test]
