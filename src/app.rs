@@ -26,10 +26,8 @@ use crate::metadata::coverart::{
 };
 use crate::metadata::discid::{DiscTrack, DiscidInfo, compute_discid};
 use crate::metadata::musicbrainz::{
-    MusicBrainzError, MusicBrainzReleaseMeta, MusicBrainzService,
+    MusicBrainzError, MusicBrainzReleaseMeta, MusicBrainzService, ReleaseSummary,
 };
-#[cfg(any(test, all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
-use crate::metadata::musicbrainz::ReleaseSummary;
 #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
 use crate::metadata::musicbrainz::ReqwestMusicBrainzHttpClient;
 use crate::naming::{
@@ -2717,6 +2715,19 @@ fn image_disc_range_from_boundaries(boundaries: &[TrackBoundary]) -> (i32, i32) 
     (start, end)
 }
 
+#[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+fn app_tracks_from_image_boundaries(boundaries: &[TrackBoundary]) -> Vec<AppTrack> {
+    boundaries
+        .iter()
+        .map(|b| AppTrack {
+            number: b.track_number as u8,
+            start_lsn: b.start_lsn,
+            end_lsn: b.start_lsn.saturating_add(b.frame_count.saturating_sub(1) as i32),
+            track_is_data: false,
+        })
+        .collect()
+}
+
 fn parse_i32_meta(map: &HashMap<String, String>, key: &str) -> Option<i32> {
     map.get(key).and_then(|v| v.trim().parse::<i32>().ok())
 }
@@ -3125,99 +3136,110 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
     let mut metadata_flow: Option<MetadataFlowResult> = None;
 
     #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
-    if source == FullRipSource::Physical {
-        use crate::cdda::linux_drive::read_drive_toc_tracks;
+    {
         use crate::metadata::coverart::ReqwestCoverArtHttpClient;
 
-        let device_path = settings.dev_path.as_deref().or(Some("/dev/cdrom"));
-        if let Ok(toc) = read_drive_toc_tracks(device_path) {
-            let app_tracks: Vec<AppTrack> = toc
-                .iter()
-                .map(|t| AppTrack {
-                    number: t.number,
-                    start_lsn: t.start_lsn,
-                    end_lsn: t.end_lsn,
-                    track_is_data: t.track_is_data,
-                })
-                .collect();
-
-            if !app_tracks.is_empty() {
-                let runtime = TokioRuntimeBuilder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|e| RunWorkflowError::Runtime(format!("tokio runtime init failed: {e}")))?;
-
-                let mb_service = MusicBrainzService::new(
-                    ReqwestMusicBrainzHttpClient::default(),
-                    "https://musicbrainz.org",
-                    "cyanrip-rs/0.1",
-                );
-                let cover_service = CoverArtService::new(
-                    ReqwestCoverArtHttpClient::default(),
-                    "http://coverartarchive.org/release",
-                    "cyanrip-rs/0.1",
-                );
-                let ar_service = AccuRipService::default();
-                let initial_cover_arts = initial_cover_arts_from_settings(settings, false)?;
-
-                let mf = runtime.block_on(orchestrate_metadata_flow(
-                    MetadataFlowInput {
-                        settings: settings.clone(),
-                        tracks: app_tracks,
-                        info_only: false,
-                        initial_cover_arts: initial_cover_arts,
-                    },
-                    &mb_service,
-                    &cover_service,
-                    &ar_service,
-                ));
-
-                if let Some(candidates) = mf.musicbrainz_release_choices.as_ref() {
-                    let discid_str = mf
-                        .discid
-                        .as_ref()
-                        .map(|d| d.musicbrainz_discid.as_str())
-                        .unwrap_or("");
-                    return Err(RunWorkflowError::Runtime(
-                        format_musicbrainz_multiple_releases_message(discid_str, candidates),
-                    ));
-                }
-
-                if let Some(release) = mf.musicbrainz.as_ref()
-                    && let Some(album_artist) = release.album_artist.as_deref()
-                {
-                    println!(
-                        "Found MusicBrainz release: {} - {}",
-                        release.album, album_artist
-                    );
-                }
-
-                println!(
-                    "Preparing rip metadata and file naming for {} selected track(s)...",
-                    read_plans.len()
-                );
-
-                for b in &read_plans {
-                    let idx = b.track_number.saturating_sub(1) as usize;
-                    if let Some(release) = mf.musicbrainz.as_ref()
-                        && let Some(tmeta) = release.tracks.get(idx)
-                    {
-                        let ent = track_meta_map.entry(b.track_number).or_default();
-                        ent.entry("title".to_string())
-                            .or_insert_with(|| tmeta.title.clone());
-                        if let Some(artist) = tmeta.artist.as_deref() {
-                            ent.entry("artist".to_string())
-                                .or_insert_with(|| artist.to_string());
-                        }
-                        ent.entry("track".to_string())
-                            .or_insert_with(|| format!("{:02}", b.track_number));
-                        ent.entry("tracktotal".to_string())
-                            .or_insert_with(|| release.tracks.len().to_string());
-                    }
-                }
-
-                metadata_flow = Some(mf);
+        let app_tracks: Vec<AppTrack> = match source {
+            FullRipSource::Physical => {
+                use crate::cdda::linux_drive::read_drive_toc_tracks;
+                let device_path = settings.dev_path.as_deref().or(Some("/dev/cdrom"));
+                read_drive_toc_tracks(device_path)
+                    .map(|toc| {
+                        toc.iter()
+                            .map(|t| AppTrack {
+                                number: t.number,
+                                start_lsn: t.start_lsn,
+                                end_lsn: t.end_lsn,
+                                track_is_data: t.track_is_data,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
             }
+            FullRipSource::Image => {
+                // Images have no independent TOC source, so MusicBrainz
+                // track-count matching is best-effort against only the
+                // tracks selected for this rip.
+                app_tracks_from_image_boundaries(&boundaries)
+            }
+        };
+
+        if !app_tracks.is_empty() {
+            let runtime = TokioRuntimeBuilder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| RunWorkflowError::Runtime(format!("tokio runtime init failed: {e}")))?;
+
+            let mb_service = MusicBrainzService::new(
+                ReqwestMusicBrainzHttpClient::default(),
+                "https://musicbrainz.org",
+                "cyanrip-rs/0.1",
+            );
+            let cover_service = CoverArtService::new(
+                ReqwestCoverArtHttpClient::default(),
+                "http://coverartarchive.org/release",
+                "cyanrip-rs/0.1",
+            );
+            let ar_service = AccuRipService::default();
+            let initial_cover_arts = initial_cover_arts_from_settings(settings, false)?;
+
+            let mf = runtime.block_on(orchestrate_metadata_flow(
+                MetadataFlowInput {
+                    settings: settings.clone(),
+                    tracks: app_tracks,
+                    info_only: false,
+                    initial_cover_arts: initial_cover_arts,
+                },
+                &mb_service,
+                &cover_service,
+                &ar_service,
+            ));
+
+            if let Some(candidates) = mf.musicbrainz_release_choices.as_ref() {
+                let discid_str = mf
+                    .discid
+                    .as_ref()
+                    .map(|d| d.musicbrainz_discid.as_str())
+                    .unwrap_or("");
+                return Err(RunWorkflowError::Runtime(
+                    format_musicbrainz_multiple_releases_message(discid_str, candidates),
+                ));
+            }
+
+            if let Some(release) = mf.musicbrainz.as_ref()
+                && let Some(album_artist) = release.album_artist.as_deref()
+            {
+                println!(
+                    "Found MusicBrainz release: {} - {}",
+                    release.album, album_artist
+                );
+            }
+
+            println!(
+                "Preparing rip metadata and file naming for {} selected track(s)...",
+                read_plans.len()
+            );
+
+            for b in &read_plans {
+                let idx = b.track_number.saturating_sub(1) as usize;
+                if let Some(release) = mf.musicbrainz.as_ref()
+                    && let Some(tmeta) = release.tracks.get(idx)
+                {
+                    let ent = track_meta_map.entry(b.track_number).or_default();
+                    ent.entry("title".to_string())
+                        .or_insert_with(|| tmeta.title.clone());
+                    if let Some(artist) = tmeta.artist.as_deref() {
+                        ent.entry("artist".to_string())
+                            .or_insert_with(|| artist.to_string());
+                    }
+                    ent.entry("track".to_string())
+                        .or_insert_with(|| format!("{:02}", b.track_number));
+                    ent.entry("tracktotal".to_string())
+                        .or_insert_with(|| release.tracks.len().to_string());
+                }
+            }
+
+            metadata_flow = Some(mf);
         }
     }
 
@@ -5131,6 +5153,37 @@ mod tests {
             *cropped.interleaved_i16_samples.last().unwrap(),
             (206 + expected_len - 1) as i16
         );
+    }
+
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    #[test]
+    fn app_tracks_from_image_boundaries_maps_lsn_and_marks_audio_only() {
+        // Locks in MusicBrainz metadata parity for image-source full rips:
+        // this feeds orchestrate_metadata_flow the same way physical-drive
+        // TOC tracks do, so album/track metadata gets assigned for images too.
+        let boundaries = vec![
+            TrackBoundary {
+                track_number: 1,
+                start_lsn: 0,
+                frame_count: 100,
+            },
+            TrackBoundary {
+                track_number: 2,
+                start_lsn: 100,
+                frame_count: 50,
+            },
+        ];
+
+        let tracks = app_tracks_from_image_boundaries(&boundaries);
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].number, 1);
+        assert_eq!(tracks[0].start_lsn, 0);
+        assert_eq!(tracks[0].end_lsn, 99);
+        assert!(!tracks[0].track_is_data);
+        assert_eq!(tracks[1].number, 2);
+        assert_eq!(tracks[1].start_lsn, 100);
+        assert_eq!(tracks[1].end_lsn, 149);
+        assert!(!tracks[1].track_is_data);
     }
 
     #[test]
