@@ -322,3 +322,92 @@ fn info_mode_requires_release_selection_when_musicbrainz_returns_multiple_releas
         "expected release-selection guidance; output:\n{msg}"
     );
 }
+
+#[test]
+#[ignore = "requires a real optical drive, network, and the multi-release fixture disc inserted beforehand"]
+fn full_rip_requires_release_selection_when_musicbrainz_returns_multiple_releases() {
+    use cyanrip_rs::app::run_workflow;
+    use cyanrip_rs::{OutputFormat, Settings};
+
+    let device = std::env::var("CYANRIP_CDROM_DEVICE").unwrap_or_else(|_| "/dev/cdrom".to_string());
+    let expected_discid = std::env::var("CYANRIP_EXPECT_MULTI_RELEASE_DISCID")
+        .unwrap_or_else(|_| "BKkzOxbdODYWFIOEEZ3b.b_nm64-".to_string());
+    let output_root = std::env::temp_dir().join("cyanrip-rs-multi-release-abort-test");
+
+    // Default (non -I, non -J) action must also abort with the disambiguation
+    // prompt instead of silently ripping without a chosen release.
+    let settings = Settings {
+        dev_path: Some(device.clone()),
+        disable_mb: false,
+        disable_accurip: true,
+        disable_coverart_db: true,
+        output_root: Some(output_root.to_string_lossy().to_string()),
+        outputs: vec![OutputFormat::Flac],
+        ..Settings::default()
+    };
+
+    let err = run_workflow(&settings).expect_err(
+        "full rip without -R should fail when MusicBrainz returns multiple releases for this disc",
+    );
+    let msg = err.to_string();
+
+    assert!(
+        msg.contains("Multiple releases found in database for DiscID"),
+        "expected multi-release prompt; output:\n{msg}"
+    );
+    assert!(
+        msg.contains(&expected_discid),
+        "expected DiscID {expected_discid} in prompt; output:\n{msg}"
+    );
+    assert!(
+        msg.contains("Please specify which release to use by adding the -R argument"),
+        "expected release-selection guidance; output:\n{msg}"
+    );
+    assert!(
+        !output_root.exists() || std::fs::read_dir(&output_root).map(|mut d| d.next().is_none()).unwrap_or(true),
+        "no rip output should have been written before release disambiguation; found files under {}",
+        output_root.display()
+    );
+}
+
+#[test]
+#[ignore = "requires a real optical drive with an audio CD known to AccurateRip inserted beforehand"]
+fn full_rip_track_one_completes_with_drive_offset_correction() {
+    // Locks in the drive-offset sample crop fix (apply_drive_offset_crop):
+    // ripping track 1 with a real, nonzero drive offset must complete and,
+    // when AccuRip lookup succeeds, must not hit the exact-rip mismatch
+    // enforcement failure caused by the previous whole-frame-only offset bug.
+    use cyanrip_rs::app::run_workflow;
+    use cyanrip_rs::{OutputFormat, Settings, calc_over_under_read_frames};
+
+    let device = std::env::var("CYANRIP_CDROM_DEVICE").unwrap_or_else(|_| "/dev/cdrom".to_string());
+    let offset: i32 = std::env::var("CYANRIP_OFFSET")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let output_root =
+        std::env::temp_dir().join(format!("cyanrip-rs-offset-lock-test-{}", std::process::id()));
+
+    let settings = Settings {
+        dev_path: Some(device),
+        offset,
+        offset_is_set: true,
+        over_under_read_frames: calc_over_under_read_frames(offset),
+        rip_indices: vec![1],
+        disable_mb: true,
+        disable_accurip: false,
+        disable_coverart_db: true,
+        output_root: Some(output_root.to_string_lossy().to_string()),
+        outputs: vec![OutputFormat::Flac],
+        ..Settings::default()
+    };
+
+    let result = run_workflow(&settings);
+    let _ = std::fs::remove_dir_all(&output_root);
+
+    result.unwrap_or_else(|e| {
+        panic!(
+            "expected track 1 to rip successfully with offset {offset} after the drive-offset crop fix; got: {e}"
+        )
+    });
+}

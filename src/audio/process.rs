@@ -1,4 +1,6 @@
-use crate::audio::PcmTrackData;
+use crate::audio::{PcmTrackData, ProcessedPcmTrackData};
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessingPath {
@@ -35,12 +37,16 @@ impl TrackProcessingOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrackProcessingError {
     InvalidSpec(&'static str),
+    BackendUnavailable(String),
+    BackendFailure(String),
 }
 
 impl std::fmt::Display for TrackProcessingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidSpec(msg) => write!(f, "invalid processing input spec: {msg}"),
+            Self::BackendUnavailable(msg) => write!(f, "hdcd backend unavailable: {msg}"),
+            Self::BackendFailure(msg) => write!(f, "hdcd backend failure: {msg}"),
         }
     }
 }
@@ -50,15 +56,22 @@ impl std::error::Error for TrackProcessingError {}
 pub fn process_track_pcm(
     input: &PcmTrackData,
     options: TrackProcessingOptions,
-) -> Result<PcmTrackData, TrackProcessingError> {
+) -> Result<ProcessedPcmTrackData, TrackProcessingError> {
     match options.selected_processing_path() {
-        ProcessingPath::Hdcd => apply_hdcd_passthrough(input),
+        ProcessingPath::Hdcd => apply_hdcd_ffmpeg(input),
         ProcessingPath::Deemphasis => apply_cd_deemphasis(input),
-        ProcessingPath::None => Ok(input.clone()),
+        ProcessingPath::None => Ok(ProcessedPcmTrackData {
+            spec: input.spec,
+            interleaved_i32_samples: input
+                .interleaved_i16_samples
+                .iter()
+                .map(|&sample| i32::from(sample))
+                .collect(),
+        }),
     }
 }
 
-fn apply_hdcd_passthrough(input: &PcmTrackData) -> Result<PcmTrackData, TrackProcessingError> {
+fn apply_hdcd_ffmpeg(input: &PcmTrackData) -> Result<ProcessedPcmTrackData, TrackProcessingError> {
     if input.spec.channels == 0 {
         return Err(TrackProcessingError::InvalidSpec("channels must be > 0"));
     }
@@ -71,12 +84,113 @@ fn apply_hdcd_passthrough(input: &PcmTrackData) -> Result<PcmTrackData, TrackPro
         ));
     }
 
-    // Keep deterministic behavior for the FLAC-only path while preserving
-    // upstream option precedence: when -H is set, HDCD path is selected.
-    Ok(input.clone())
+    let channels = usize::from(input.spec.channels);
+    if !input.interleaved_i16_samples.len().is_multiple_of(channels) {
+        return Err(TrackProcessingError::InvalidSpec(
+            "sample count must be divisible by channels",
+        ));
+    }
+
+    let mut raw_input = Vec::with_capacity(input.interleaved_i16_samples.len() * 4);
+    for sample in &input.interleaved_i16_samples {
+        // Match ffmpeg's native s16->s32 conversion semantics (left shift by 16).
+        let widened = i32::from(*sample) << 16;
+        raw_input.extend_from_slice(&widened.to_le_bytes());
+    }
+
+    let sample_rate = input.spec.sample_rate.to_string();
+    let channel_count = input.spec.channels.to_string();
+
+    let mut child = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-auto_conversion_filters",
+            "-f",
+            "s32le",
+            "-ar",
+            sample_rate.as_str(),
+            "-ac",
+            channel_count.as_str(),
+            "-i",
+            "pipe:0",
+            "-af",
+            "hdcd",
+            "-f",
+            "s32le",
+            "pipe:1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                TrackProcessingError::BackendUnavailable("ffmpeg executable not found in PATH".to_string())
+            } else {
+                TrackProcessingError::BackendFailure(format!("failed to spawn ffmpeg: {err}"))
+            }
+        })?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(&raw_input).map_err(|err| {
+            TrackProcessingError::BackendFailure(format!("failed writing PCM to ffmpeg stdin: {err}"))
+        })?;
+    }
+
+    let output = child.wait_with_output().map_err(|err| {
+        TrackProcessingError::BackendFailure(format!("failed waiting for ffmpeg: {err}"))
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = if stderr.is_empty() {
+            format!("ffmpeg exited with status {}", output.status)
+        } else {
+            format!("{stderr} (status {})", output.status)
+        };
+        return Err(TrackProcessingError::BackendFailure(detail));
+    }
+
+    if !output.stdout.len().is_multiple_of(4) {
+        return Err(TrackProcessingError::BackendFailure(
+            "ffmpeg produced invalid PCM byte length".to_string(),
+        ));
+    }
+
+    let mut samples = Vec::with_capacity(output.stdout.len() / 4);
+    for chunk in output.stdout.chunks_exact(4) {
+        let widened = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        // Convert ffmpeg's s32 domain into a 24-bit PCM container while preserving
+        // HDCD's expanded precision (effective 20-bit content).
+        let rounded = if widened >= 0 {
+            widened.saturating_add(0x80)
+        } else {
+            widened.saturating_sub(0x80)
+        };
+        let narrowed = rounded >> 8;
+        let clamped = narrowed.max(-8_388_608).min(8_388_607);
+        samples.push(clamped);
+    }
+
+    if !samples.len().is_multiple_of(channels) {
+        return Err(TrackProcessingError::BackendFailure(
+            "ffmpeg output sample count is not channel-aligned".to_string(),
+        ));
+    }
+
+    let mut spec = input.spec;
+    spec.bits_per_sample = 24;
+
+    Ok(ProcessedPcmTrackData {
+        spec,
+        interleaved_i32_samples: samples,
+    })
 }
 
-fn apply_cd_deemphasis(input: &PcmTrackData) -> Result<PcmTrackData, TrackProcessingError> {
+fn apply_cd_deemphasis(input: &PcmTrackData) -> Result<ProcessedPcmTrackData, TrackProcessingError> {
     if input.spec.channels == 0 {
         return Err(TrackProcessingError::InvalidSpec("channels must be > 0"));
     }
@@ -128,9 +242,9 @@ fn apply_cd_deemphasis(input: &PcmTrackData) -> Result<PcmTrackData, TrackProces
         }
     }
 
-    Ok(PcmTrackData {
+    Ok(ProcessedPcmTrackData {
         spec: input.spec,
-        interleaved_i16_samples: out,
+        interleaved_i32_samples: out.into_iter().map(i32::from).collect(),
     })
 }
 
@@ -168,13 +282,19 @@ mod tests {
         )
         .expect("processing should succeed");
 
-        assert_eq!(output, input);
+        assert_eq!(output.spec, input.spec);
+        let expected: Vec<i32> = input
+            .interleaved_i16_samples
+            .iter()
+            .map(|&sample| i32::from(sample))
+            .collect();
+        assert_eq!(output.interleaved_i32_samples, expected);
     }
 
     #[test]
     fn hdcd_path_selected_when_hdcd_is_requested() {
         let input = sample_track();
-        let output = process_track_pcm(
+        let result = process_track_pcm(
             &input,
             TrackProcessingOptions {
                 decode_hdcd: true,
@@ -182,10 +302,23 @@ mod tests {
                 force_deemphasis: false,
                 track_has_preemphasis: false,
             },
-        )
-        .expect("hdcd path should be accepted");
+        );
 
-        assert_eq!(output, input);
+        match result {
+            Ok(output) => {
+                assert_eq!(output.spec.channels, input.spec.channels);
+                assert_eq!(output.spec.sample_rate, input.spec.sample_rate);
+                assert_eq!(output.spec.bits_per_sample, 24);
+                assert_eq!(
+                    output.interleaved_i32_samples.len(),
+                    input.interleaved_i16_samples.len()
+                );
+            }
+            Err(TrackProcessingError::BackendUnavailable(_)) => {
+                // Some CI/dev environments do not provide ffmpeg.
+            }
+            Err(err) => panic!("unexpected hdcd processing failure: {err}"),
+        }
     }
 
     #[test]
@@ -202,7 +335,12 @@ mod tests {
         )
         .expect("force deemphasis should succeed");
 
-        assert_ne!(output.interleaved_i16_samples, input.interleaved_i16_samples);
+        let input_as_i32: Vec<i32> = input
+            .interleaved_i16_samples
+            .iter()
+            .map(|&sample| i32::from(sample))
+            .collect();
+        assert_ne!(output.interleaved_i32_samples, input_as_i32);
         assert_eq!(output.spec, input.spec);
     }
 

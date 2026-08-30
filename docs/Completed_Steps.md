@@ -1,5 +1,7 @@
 # Completed Steps
 
+Last updated: 2026-08-28
+
 This document summarizes completed migration steps and major code changes.
 
 ## M0 Baseline and Parity Contract
@@ -65,7 +67,9 @@ Coverage notes:
 - Added snapshot-style fixtures for deterministic start and finish report rendering.
 - Added deterministic checksum parity tests for first/last-track windows and chunked input processing.
 
-## M3 Metadata Services (in progress)
+## M3 Metadata Services
+
+Status: complete
 
 Completed subtopic:
 - Metadata module scaffolding created under src/metadata.
@@ -151,9 +155,9 @@ Completed subtopic:
 Coverage notes:
 - Added retry-policy tests mirroring the upstream repeat-rip behavior threshold and max-retry stopping behavior from /cyanrip/src/cyanrip_main.c.
 
-## M6 Linux physical-drive adapter scaffold
+## M6 Linux physical-drive support and reliability layer
 
-Status: partial
+Status: complete
 
 Completed subtopic:
 - Added Linux physical-drive adapter module in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs) implementing the shared CDDA frame reader contract.
@@ -174,7 +178,7 @@ Coverage notes:
 - Added scripted M6 scenario runner in [../scripts/run_m6_hardware_validation.sh](../scripts/run_m6_hardware_validation.sh) and real-drive interruption validation in [../tests/linux_physical_drive_validation.rs](../tests/linux_physical_drive_validation.rs).
 - Executed manual media-change scenario once and recorded console prompt + outcome evidence in [M6_REAL_HARDWARE_VALIDATION.md](M6_REAL_HARDWARE_VALIDATION.md).
 
-## M7 Differential Harness (first slice)
+## M7 Full workflow integration and release parity (in progress)
 
 Status: partial
 
@@ -185,10 +189,14 @@ Completed subtopic:
 - Implemented runtime verify-log mode in [../src/main.rs](../src/main.rs) with FUN512 outcome mapping and C-aligned result text.
 - Expanded differential harness to include verify-log fixture outcomes (`valid`, `mismatch`, `no_checksum`, `trailing`, and missing-file I/O error).
 - Added Rust-only integration test [../tests/verify_log_cli.rs](../tests/verify_log_cli.rs) to keep verify-log exit-code/message behavior guarded in normal test runs.
+- Implemented `-G/--no-coverart-embed` runtime behavior in [../src/app.rs](../src/app.rs): FLAC picture embedding now follows `settings.disable_coverart_embedding` while preserving normal cover discovery/output flow.
+- Implemented `-Q/--eject` runtime behavior in [../src/app.rs](../src/app.rs) with capability-gated Linux libcdio ejection helper in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs).
 
 Coverage notes:
 - CLI option surface and parse-level action routing are now explicitly audited.
-- End-to-end workflow parity remains pending while runtime command path is still scaffolded.
+- Added FLAC embedding gate regression tests in [../src/app.rs](../src/app.rs) (`flac_embeds_cover_art_by_default_when_available`, `no_coverart_embed_skips_flac_picture_embedding`).
+- Added eject gate regression test in [../src/app.rs](../src/app.rs) (`eject_gate_requires_flag_and_physical_source`).
+- End-to-end workflow parity remains pending while run-path hardening and broader differential coverage continue.
 
 Run-path progress:
 - `Run` action in [../src/main.rs](../src/main.rs) now executes app-level dispatch instead of placeholder output.

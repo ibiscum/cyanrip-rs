@@ -5,7 +5,7 @@ pub enum ParanoiaMode {
     Disable,
     Overlap,
     OverlapVerify,
-    FullAllowSkip,
+    FullXorNeverSkip,
 }
 
 pub fn paranoia_mode_from_level(level: i32) -> Result<ParanoiaMode, String> {
@@ -13,7 +13,7 @@ pub fn paranoia_mode_from_level(level: i32) -> Result<ParanoiaMode, String> {
         0 => Ok(ParanoiaMode::Disable),
         1 => Ok(ParanoiaMode::Overlap),
         2 => Ok(ParanoiaMode::OverlapVerify),
-        3 => Ok(ParanoiaMode::FullAllowSkip),
+        3 => Ok(ParanoiaMode::FullXorNeverSkip),
         _ => Err(format!(
             "Invalid paranoia level {level} must be between 0 and {MAX_PARANOIA_LEVEL}"
         )),
@@ -36,6 +36,9 @@ pub enum RipEvent {
     StartTrack,
     FrameReadOk,
     FrameReadError,
+    /// Frame retries exhausted; a silent frame was substituted and the pass continues
+    /// (matches upstream cyanrip's cyanrip_read_frame behavior, not a track failure).
+    FrameSubstitutedSilence,
     ChecksumSatisfied,
     ChecksumMismatch,
     RetryReady,
@@ -58,6 +61,7 @@ pub fn next_rip_state(state: RipState, event: RipEvent) -> RipState {
         (RipState::Idle, RipEvent::StartTrack) => RipState::Reading,
         (RipState::Reading, RipEvent::FrameReadOk) => RipState::Reading,
         (RipState::Reading, RipEvent::FrameReadError) => RipState::Reading,
+        (RipState::Reading, RipEvent::FrameSubstitutedSilence) => RipState::Reading,
         (RipState::Reading, RipEvent::ChecksumMismatch) => RipState::RetryPending,
         (RipState::RetryPending, RipEvent::RetryReady) => RipState::Reading,
         (RipState::RetryPending, RipEvent::RetryLimitReached) => RipState::Finalizing,
@@ -143,7 +147,7 @@ mod tests {
         );
         assert_eq!(
             paranoia_mode_from_level(3).unwrap(),
-            ParanoiaMode::FullAllowSkip
+            ParanoiaMode::FullXorNeverSkip
         );
         assert!(paranoia_mode_from_level(4).is_err());
     }

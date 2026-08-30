@@ -106,7 +106,7 @@ Precedence is frozen:
 3. otherwise normal Run validation path is applied.
 
 Output root precedence is frozen:
-1. `-B/--outputroot` when set and non-empty.
+1. `-B/--output-root` when set and non-empty.
 2. `CYANRIP_RS_OUTPUT_ROOT` when set and non-empty.
 3. current working directory fallback.
 

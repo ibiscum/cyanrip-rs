@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cyanrip_rs::audio::flac::write_flac_file;
-use cyanrip_rs::audio::{PcmSpec, PcmTrackData};
+use cyanrip_rs::audio::{PcmSpec, ProcessedPcmTrackData};
 
 fn unique_temp_flac_path() -> PathBuf {
     let repo_tmp = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tmp");
@@ -18,13 +18,13 @@ fn unique_temp_flac_path() -> PathBuf {
 #[test]
 fn writes_flac_file_end_to_end() {
     let path = unique_temp_flac_path();
-    let input = PcmTrackData {
+    let input = ProcessedPcmTrackData {
         spec: PcmSpec {
             channels: 1,
             sample_rate: 48_000,
             bits_per_sample: 16,
         },
-        interleaved_i16_samples: vec![
+        interleaved_i32_samples: vec![
             0, 10, -10, 300, -300, 1200, -1200, 50, -50, 75, -75, 90, -90, 110, -110, 130,
             -130,
         ],
@@ -42,11 +42,7 @@ fn writes_flac_file_end_to_end() {
         .samples()
         .map(|s| s.expect("sample should decode"))
         .collect();
-    let expected: Vec<i32> = input
-        .interleaved_i16_samples
-        .iter()
-        .map(|&s| i32::from(s))
-        .collect();
+    let expected: Vec<i32> = input.interleaved_i32_samples.to_vec();
     assert_eq!(samples, expected);
 
     let cleanup = fs::remove_file(&path);

@@ -1,10 +1,43 @@
 # Migration Changelog
 
+Milestone status vocabulary in headings follows: complete, in progress, planned, deferred.
+
+## 2026-08-28
+
+### Documentation: `-M/--cue-scheme` Option Flow
+- Added [CUE_SCHEME_OPTION_FLOW.md](cue-scheme_option_flow.md), documenting purpose, path-resolution flow, output-root precedence, and current implementation status for `-M/--cue-scheme`.
+- Linked the new cue-scheme option-flow document from [README.md](README.md) in this docs directory.
+
+### Documentation: `-l/--tracks` Option Flow
+- Added [TRACKS_OPTION_FLOW.md](tracks_option_flow.md), documenting purpose, parse/normalization flow, runtime track-selection behavior, and current implementation status for `-l/--tracks`.
+
+## 2026-08-27
+
+### Runtime: `-K/--no-replaygain` Behavior
+- Implemented FLAC ReplayGain tag emission in [../src/app.rs](../src/app.rs) for the active writer flow (track and album ReplayGain Vorbis fields).
+- Wired `-K/--no-replaygain` to disable ReplayGain tag generation in that runtime path while keeping normal FLAC metadata embedding intact.
+- Added integration coverage in [../tests/app_cli_integration.rs](../tests/app_cli_integration.rs) to assert ReplayGain tags are present by default and absent with `-K`.
+
+### Documentation: `-W/--no-deemphasis` Option Flow
+- Added [NO_DEEMPHASIS_OPTION_FLOW.md](no-deemphasis_option_flow.md), documenting `-W/--no-deemphasis` purpose, CLI/settings mapping, automatic deemphasis disable semantics, and option interactions.
+- Linked the new no-deemphasis option-flow document from [README.md](README.md) in this docs directory.
+
+### Documentation: `-H/--hdcd` Option Flow and Parity Status
+- Added [HDCD_OPTION_FLOW.md](hdcd_option_flow.md), documenting `-H/--hdcd` purpose, parse/settings mapping, processing precedence, ffmpeg backend flow, and 24-bit WAV/FLAC output behavior.
+- Linked the new HDCD option-flow document from [README.md](README.md) in this docs directory.
+- Updated [../PARITY_MATRIX.md](../PARITY_MATRIX.md) to mark HDCD/deemphasis option handling as `Complete` (implemented ffmpeg HDCD path with 24-bit propagation for WAV/FLAC) and adjusted the current-gap summary accordingly.
+
+## 2026-08-26
+
+### Documentation: `-a/--album-meta` Option Flow
+- Added [ALBUM_META_OPTION_FLOW.md](album-meta_option_flow.md), documenting purpose, input format, precedence, and runtime consumption points for `-a/--album-meta`.
+- Linked the new document from [README.md](README.md) in this docs directory.
+
 ## 2026-08-25
 
-### `-B/--outputroot` Help and Option-Flow Documentation
-- Clarified CLI `-h` help text for [../src/cli.rs](../src/cli.rs): `-B/--outputroot` now explicitly states it overrides `CYANRIP_RS_OUTPUT_ROOT`.
-- Added help-output regression coverage in [../src/cli.rs](../src/cli.rs) to lock the new `-B/--outputroot` description.
+### `-B/--output-root` Help and Option-Flow Documentation
+- Clarified CLI `-h` help text for [../src/cli.rs](../src/cli.rs): `-B/--output-root` now explicitly states it overrides `CYANRIP_RS_OUTPUT_ROOT`.
+- Added help-output regression coverage in [../src/cli.rs](../src/cli.rs) to lock the new `-B/--output-root` description.
 - Updated CLI behavior freeze defaults and precedence notes in [../CLI_BEHAVIOR_FREEZE.md](../CLI_BEHAVIOR_FREEZE.md) to include `output_root` and output-root resolution order.
 - Added dedicated option-flow documentation in [OUTPUTROOT_OPTION_FLOW.md](OUTPUTROOT_OPTION_FLOW.md), including precedence rules, behavior notes, and usage examples.
 - Linked the new flow document from [README.md](README.md) in this docs directory.
@@ -24,7 +57,7 @@
 
 ## 2026-08-24
 
-### M7 Paranoia Main-Flow Wiring and `--no-accurip` Option Flow
+### M7 Paranoia Main-Flow Wiring and `--no-accurip` Option Flow (in progress at the time)
 - Cross-checked upstream docs and source (`main-flow.md`, `no-accurip-option-flow.md`, and `src/cyanrip_main.c`) and aligned info/no-accurip interactions in [../src/cli.rs](../src/cli.rs): `-I` keeps AccurateRip behavior user-controlled (via `-A`) while still disabling eject side effects.
 - Kept find-offset override semantics intact in [../src/cli.rs](../src/cli.rs): `-f/--find-offset` re-enables AccurateRip while disabling MusicBrainz/Cover Art DB and resetting offset/eject side effects.
 - Hardened physical-drive paranoia integration in [../src/app.rs](../src/app.rs) so the preflight paranoia run is now state-machine validated and must end in `TrackComplete`; non-complete end states are surfaced as runtime errors.
@@ -32,7 +65,7 @@
 
 ## 2026-08-22
 
-### M7 Info-Only MusicBrainz Release Selection Parity
+### M7 Info-Only MusicBrainz Release Selection Parity (in progress at the time)
 - Updated `-I` info-only workflow in [../src/app.rs](../src/app.rs) to perform MusicBrainz release resolution when DiscID is available and MusicBrainz is enabled.
 - Implemented upstream-compatible multi-release behavior for info-only mode: if multiple releases are returned and no `-R` selection is provided, the run now exits non-zero with a candidate list and explicit `-R` guidance.
 - Extended `-I` reporting in [../src/app.rs](../src/app.rs) to include selected MusicBrainz release-level fields (`Release ID`, `Album`, `Album artist`, `Disc number`, `Total discs`) and per-track metadata blocks when a release is selected via `-R`.
@@ -42,7 +75,7 @@
 - Added ignored hardware integration coverage for `-I` multi-release selection error-path behavior in [../tests/linux_physical_drive_validation.rs](../tests/linux_physical_drive_validation.rs).
 - Added helper runner script [../scripts/run_m7_info_release_disambiguation.sh](../scripts/run_m7_info_release_disambiguation.sh) to execute the two ignored `run_workflow_cli` disambiguation tests (`-R 1` and `-R 2`) with required features and environment defaults.
 
-### M7 Cue-Only Offset-Unset Parity
+### M7 Cue-Only Offset-Unset Parity (in progress at the time)
 - Matched upstream `-J` behavior for unset offset: runtime returns the message `Offset is unset! To continue with an offset of 0, run with -s 0!` and exits successfully.
 - Added `Settings.offset_is_set` tracking in [../src/lib.rs](../src/lib.rs) and CLI mapping in [../src/cli.rs](../src/cli.rs) to preserve explicit-vs-default offset intent.
 - Added cue-only runtime parity handling in [../src/app.rs](../src/app.rs).
@@ -54,7 +87,7 @@
 
 ## 2026-08-20
 
-### M7 CLI Info-Only Parity Tightening
+### M7 CLI Info-Only Parity Tightening (in progress at the time)
 - Enforced `-I` info-only no-eject semantics in [../src/cli.rs](../src/cli.rs) so `-Q` is ignored in info-only mode.
 - Extended info-only runtime reporting in [../src/app.rs](../src/app.rs) to explicitly state no ripping/no eject behavior and include selected-track summary.
 - Implemented linux+libcdio-backed `-I` TOC readout in [../src/app.rs](../src/app.rs), including per-track LSN/frame/duration lines and local DiscID/CDDB derivation from real TOC data.
@@ -83,7 +116,7 @@
 - Added log verification fixture samples in [../tests/fixtures/log/](../tests/fixtures/log/).
 - Added FUN512 vector fixture in [../tests/fixtures/checksum/fun512_vectors.json](../tests/fixtures/checksum/fun512_vectors.json).
 
-### M2 Start
+### M2 Deterministic Core Modules (in progress at the time)
 - Ported naming and sanitation core rules into [../src/naming.rs](../src/naming.rs).
 - Added naming-focused regression tests.
 - Ported cue writer core behavior into [../src/cue.rs](../src/cue.rs).
@@ -95,7 +128,7 @@
 - Expanded ChecksumCtx regression coverage for first/last-track windows and chunked processing.
 - Aligned checksum window arithmetic with C-style u32 wrapping behavior.
 
-### M3 Start
+### M3 Metadata Services (in progress at the time)
 - Added metadata module scaffolding in [../src/metadata/](../src/metadata/).
 - Ported DiscID core flow in [../src/metadata/discid.rs](../src/metadata/discid.rs).
 - Added deterministic regression vectors for MusicBrainz DiscID, CDDB ID, and submission TOC URL generation.
@@ -108,7 +141,7 @@
 - Evaluated libarcstk/arcstk/accurip crates on crates.io; no directly reusable Rust binding crate available in this environment, so native Rust implementation remains in-tree.
 - Added app-level metadata flow orchestration in [../src/app.rs](../src/app.rs) with deterministic order and fallback behavior tests.
 
-### M4 Start
+### M4 Audio Output Pipeline (in progress at the time)
 - Added audio module scaffold in [../src/audio/mod.rs](../src/audio/mod.rs).
 - Implemented WAV output writer in [../src/audio/wav.rs](../src/audio/wav.rs) using hound.
 - Added WAV end-to-end integration test in [../tests/wav_pipeline.rs](../tests/wav_pipeline.rs).
@@ -120,50 +153,50 @@
 - Added app-level tests validating embedded FLAC tag fields for album/track/disc metadata.
 - Added CLI-to-app integration tests in [../tests/app_cli_integration.rs](../tests/app_cli_integration.rs) that validate orchestration disable-flag behavior and CLI-driven output dispatch/tag propagation.
 
-### M5 Paranoia Control Path Start
+### M5 Paranoia Control Path (in progress at the time)
 - Added CDDA paranoia state-machine scaffolding in [../src/cdda/paranoia.rs](../src/cdda/paranoia.rs).
 - Added regression tests for retry-loop transitions, retry-limit finalize behavior, media-change abort handling, and fatal pipeline error handling.
 - Updated roadmap and parity planning docs to include explicit milestones for wiring paranoia control logic into image-backed and physical-drive readers.
 
-### M5 Reader Runtime Integration
+### M5 Reader Runtime Integration (in progress at the time)
 - Added CDDA reader trait and paranoia-oriented track runner in [../src/cdda/reader.rs](../src/cdda/reader.rs).
 - Added image-backed fake reader with injected read-failure and media-change behaviors for deterministic fault-injection tests.
 - Added Cargo features for cdda/paranoia availability and backend planning flags (including libcdio-sys and a libcdio-rs planning feature) in [../Cargo.toml](../Cargo.toml).
 
-### M6 Linux Physical-Drive Adapter (first slice)
+### M6 Linux Physical-Drive Adapter (in progress at the time)
 - Added Linux physical-drive adapter scaffold in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs) that implements the shared CDDA frame reader trait and maps media-change semantics into the same paranoia event pipeline.
 - Added backend abstraction tests for seek/read progression, read-failure propagation, media-changed mapping parity, and backend cleanup behavior without requiring hardware.
 - Added optional libcdio-sys backend wiring for real-drive reads behind feature flags.
 - Updated libcdio-sys dependency/features to a safe set that avoids UDF headers and validates with `cargo check --features "backend-libcdio-sys paranoia"` and `cargo test --features "backend-libcdio-sys paranoia"`.
 
-### M6 Linux Real-Drive Validation Harness
+### M6 Linux Real-Drive Validation Harness (in progress at the time)
 - Added ignored hardware regression tests in [../tests/linux_physical_drive_validation.rs](../tests/linux_physical_drive_validation.rs) that open `/dev/cdrom`, read TOC entries, and read one CDDA frame through the libcdio-backed adapter.
 - Added prerequisite checker script in [../scripts/check_linux_cdda_stack.sh](../scripts/check_linux_cdda_stack.sh) for pkg-config-visible libcdio libraries and feature-gated Rust compilation.
 - Documented real-drive validation commands and explicit "insert audio CD beforehand" prerequisite in [../README.md](../README.md).
 
-### M6 Linux Paranoia Runtime Wiring
+### M6 Linux Paranoia Runtime Wiring (in progress at the time)
 - Added Linux paranoia runner APIs in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs) that wire physical-drive reads into `run_track_with_paranoia` (including frame retries and finalize flush transitions).
 - Added backend-mock regression tests for retry/error and media-change abort paths in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs).
 - Added ignored hardware integration test in [../tests/linux_physical_drive_validation.rs](../tests/linux_physical_drive_validation.rs) to validate paranoia-run completion against a readable audio CD.
 
-### M6 Paranoia Heuristics and Callback Counters
+### M6 Paranoia Heuristics and Callback Counters (in progress at the time)
 - Added paranoia callback counter model in [../src/cdda/reader.rs](../src/cdda/reader.rs) with counters aligned to upstream status categories (READ/VERIFY/OVERLAP/READERR/WROTE/FINISHED and related entries).
 - Added overlap/verify heuristic configuration and runtime handling in [../src/cdda/reader.rs](../src/cdda/reader.rs), including drift detection that forces retry behavior until convergence or retry limit.
 - Added Linux helper `heuristics_for_paranoia_level` and heuristic-aware runner variants in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs).
 - Added regression tests for overlap-drift retry behavior and level-based verify/overlap defaults in [../src/cdda/reader.rs](../src/cdda/reader.rs) and [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs).
 
-### M6 Media-Changed and Interruption Handling
+### M6 Media-Changed and Interruption Handling (in progress at the time)
 - Added interruptible paranoia runtime path in [../src/cdda/reader.rs](../src/cdda/reader.rs) that emits `QuitRequested` and transitions to aborted state while preserving callback counters.
 - Added linux-drive interruptible runner variants in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs) so physical-backend runs can share the same interruption semantics.
 - Added regression tests for interruption abort behavior and existing media-change abort behavior in [../src/cdda/reader.rs](../src/cdda/reader.rs) and [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs).
 
-### M6 Practical Real-Hardware Reliability Scenarios
+### M6 Practical Real-Hardware Reliability Scenarios (in progress at the time)
 - Added real-hardware interruption validation test and manual media-change scenario reference in [../tests/linux_physical_drive_validation.rs](../tests/linux_physical_drive_validation.rs).
 - Added practical M6 scenario runbook and acceptance-notes template in [M6_REAL_HARDWARE_VALIDATION.md](M6_REAL_HARDWARE_VALIDATION.md).
 - Added scripted scenario runner in [../scripts/run_m6_hardware_validation.sh](../scripts/run_m6_hardware_validation.sh) to execute TOC/frame/paranoia/interruption checks consistently.
 - Executed manual media-change scenario once and recorded result details in [M6_REAL_HARDWARE_VALIDATION.md](M6_REAL_HARDWARE_VALIDATION.md), including operator prompt text shown during test run.
 
-### M7 Differential Harness (first slice)
+### M7 Differential Harness (in progress at the time)
 - Added ignored differential CLI test harness in [../tests/differential_cli_vs_c.rs](../tests/differential_cli_vs_c.rs) to compare Rust and C binary behavior for deterministic CLI scenarios.
 - Added CLI option-surface parity audit test in [../src/cli.rs](../src/cli.rs) to validate upstream short-option coverage.
 - Added M7 runbook and execution script in [M7_DIFFERENTIAL_HARNESS.md](M7_DIFFERENTIAL_HARNESS.md) and [../scripts/run_m7_cli_diff.sh](../scripts/run_m7_cli_diff.sh).
@@ -171,7 +204,7 @@
 - Expanded differential harness cases to include verify-log fixture outcomes (`valid`, `mismatch`, `no_checksum`, `trailing`, and missing-file I/O error).
 - Added always-on Rust CLI integration coverage for verify-log status/message mapping in [../tests/verify_log_cli.rs](../tests/verify_log_cli.rs) so parity checks run without requiring the C binary.
 
-### M7 Run Workflow Wiring (first slice)
+### M7 Run Workflow Wiring (in progress at the time)
 - Replaced placeholder `Run` print path in [../src/main.rs](../src/main.rs) with dispatch to app-level workflow handling.
 - Added app-level workflow gate in [../src/app.rs](../src/app.rs) that now reports explicit not-yet-wired mode paths and unsupported output codecs with non-zero exit behavior.
 - Added new tests in [../tests/run_workflow_cli.rs](../tests/run_workflow_cli.rs) and app unit tests to lock command-path behavior for this slice.
