@@ -250,11 +250,12 @@ where
         heuristics,
         || false,
         checksum_fn,
+        |_done, _total| {},
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn run_track_with_paranoia_heuristics_interruptible<R, F, I>(
+pub fn run_track_with_paranoia_heuristics_interruptible<R, F, I, P>(
     reader: &mut R,
     start_lsn: i32,
     frame_count: usize,
@@ -263,11 +264,13 @@ pub fn run_track_with_paranoia_heuristics_interruptible<R, F, I>(
     heuristics: ParanoiaHeuristicConfig,
     mut should_interrupt: I,
     mut checksum_fn: F,
+    mut on_frame_progress: P,
 ) -> Result<ParanoiaTrackRunResult, CddaReadError>
 where
     R: CddaFrameReader,
     F: FnMut(u32, &[Vec<u8>]) -> u32,
     I: FnMut() -> bool,
+    P: FnMut(usize, usize),
 {
     let mut state = RipState::Idle;
     let mut events = vec![RipEvent::StartTrack];
@@ -392,6 +395,7 @@ where
             // seam kept structurally in the same place as upstream's cyanrip_rip_track.
             let frame = apply_offset_edge_trim(frame_idx, frame_count, frame);
             pass_frames.push(frame);
+            on_frame_progress(frame_idx.saturating_add(1), frame_count);
         }
 
         let checksum = checksum_fn(pass, &pass_frames);
@@ -490,6 +494,7 @@ where
         ParanoiaHeuristicConfig::default(),
         || false,
         checksum_fn,
+        |_done, _total| {},
     )
 }
 
@@ -693,6 +698,7 @@ mod tests {
                 checks >= 2
             },
             |_pass, _| 0,
+            |_done, _total| {},
         )
         .expect("interrupt should return aborted result");
 

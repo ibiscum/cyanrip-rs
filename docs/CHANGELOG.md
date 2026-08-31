@@ -2,6 +2,13 @@
 
 Milestone status vocabulary in headings follows: complete, in progress, planned, deferred.
 
+## 2026-09-01
+
+### Runtime: Live Progress During Paranoia Ripping
+- Added a per-frame progress callback threaded through the paranoia read pipeline (`run_track_with_paranoia_heuristics_interruptible` in [../src/cdda/reader.rs](../src/cdda/reader.rs) and the `run_paranoia_on_linux_drive_*` wrapper chain in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs)), so callers can observe in-pass read progress instead of only a start/complete message.
+- Wired the physical-drive paranoia read in [../src/app.rs](../src/app.rs) to print a throttled `\r`-updated progress line (percentage + ETA) during ripping, matching the existing direct-read (non-paranoia) progress display.
+- Kept all other callers (image/synthetic read path, alternate public wrappers used by real-hardware validation tests) on a no-op progress callback, so their behavior and public signatures relying on the previous argument order are otherwise unaffected aside from the added parameter.
+
 ## 2026-08-31
 
 ### Runtime: Diagnostic Logging via `log`/`env_logger`

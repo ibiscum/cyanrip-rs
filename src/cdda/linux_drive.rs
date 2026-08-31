@@ -444,11 +444,12 @@ where
         heuristics,
         || false,
         checksum_fn,
+        |_done, _total| {},
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn run_paranoia_on_linux_drive_with_backend_heuristics_interruptible<B, F, I>(
+pub fn run_paranoia_on_linux_drive_with_backend_heuristics_interruptible<B, F, I, P>(
     backend: B,
     device_path: Option<&str>,
     start_lsn: i32,
@@ -458,11 +459,13 @@ pub fn run_paranoia_on_linux_drive_with_backend_heuristics_interruptible<B, F, I
     heuristics: ParanoiaHeuristicConfig,
     should_interrupt: I,
     checksum_fn: F,
+    on_frame_progress: P,
 ) -> Result<ParanoiaTrackRunResult, CddaReadError>
 where
     B: LinuxDriveBackend,
     F: FnMut(u32, &[Vec<u8>]) -> u32,
     I: FnMut() -> bool,
+    P: FnMut(usize, usize),
 {
     let mut reader = LinuxPhysicalDriveReader::new(backend, device_path)?;
     run_track_with_paranoia_heuristics_interruptible(
@@ -474,6 +477,7 @@ where
         heuristics,
         should_interrupt,
         checksum_fn,
+        on_frame_progress,
     )
 }
 
@@ -496,10 +500,12 @@ where
         retry_policy,
         ParanoiaHeuristicConfig::default(),
         checksum_fn,
+        |_done, _total| {},
     )
 }
 
-pub fn run_paranoia_on_linux_drive_heuristics<F>(
+#[allow(clippy::too_many_arguments)]
+pub fn run_paranoia_on_linux_drive_heuristics<F, P>(
     device_path: Option<&str>,
     start_lsn: i32,
     frame_count: usize,
@@ -507,9 +513,11 @@ pub fn run_paranoia_on_linux_drive_heuristics<F>(
     retry_policy: &mut RetryPolicy,
     heuristics: ParanoiaHeuristicConfig,
     checksum_fn: F,
+    on_frame_progress: P,
 ) -> Result<ParanoiaTrackRunResult, CddaReadError>
 where
     F: FnMut(u32, &[Vec<u8>]) -> u32,
+    P: FnMut(usize, usize),
 {
     run_paranoia_on_linux_drive_with_backend_heuristics_interruptible(
         DefaultLinuxDriveBackend::default(),
@@ -521,6 +529,7 @@ where
         heuristics,
         || false,
         checksum_fn,
+        on_frame_progress,
     )
 }
 
@@ -547,10 +556,11 @@ where
         ParanoiaHeuristicConfig::default(),
         should_interrupt,
         checksum_fn,
+        |_done, _total| {},
     )
 }
 
-pub fn run_paranoia_on_linux_drive_with_defaults_for_level<F>(
+pub fn run_paranoia_on_linux_drive_with_defaults_for_level<F, P>(
     device_path: Option<&str>,
     paranoia_level: i32,
     start_lsn: i32,
@@ -558,9 +568,11 @@ pub fn run_paranoia_on_linux_drive_with_defaults_for_level<F>(
     max_frame_retries: u32,
     retry_policy: &mut RetryPolicy,
     checksum_fn: F,
+    on_frame_progress: P,
 ) -> Result<ParanoiaTrackRunResult, CddaReadError>
 where
     F: FnMut(u32, &[Vec<u8>]) -> u32,
+    P: FnMut(usize, usize),
 {
     // Prefer the real libcdio paranoia engine whenever it's compiled in; the
     // software-heuristic path below only exists for builds without it.
@@ -574,6 +586,7 @@ where
             max_frame_retries,
             retry_policy,
             checksum_fn,
+            on_frame_progress,
         );
     }
 
@@ -589,6 +602,7 @@ where
             retry_policy,
             heuristics,
             checksum_fn,
+            on_frame_progress,
         )
     }
 }
@@ -777,7 +791,7 @@ impl CddaFrameReader for NativeParanoiaFrameReader {
 /// Runs a track through the real libcdio paranoia engine, wrapped in the same
 /// repeat-rip outer state machine used for the software-heuristic path.
 #[cfg(feature = "backend-libcdio-sys")]
-pub fn run_paranoia_on_linux_drive_native_for_level<F>(
+pub fn run_paranoia_on_linux_drive_native_for_level<F, P>(
     device_path: Option<&str>,
     paranoia_level: i32,
     start_lsn: i32,
@@ -785,9 +799,11 @@ pub fn run_paranoia_on_linux_drive_native_for_level<F>(
     max_frame_retries: u32,
     retry_policy: &mut RetryPolicy,
     checksum_fn: F,
+    on_frame_progress: P,
 ) -> Result<ParanoiaTrackRunResult, CddaReadError>
 where
     F: FnMut(u32, &[Vec<u8>]) -> u32,
+    P: FnMut(usize, usize),
 {
     let mode = super::paranoia::paranoia_mode_from_level(paranoia_level)
         .map_err(CddaReadError::ReadFailed)?;
@@ -801,11 +817,12 @@ where
         ParanoiaHeuristicConfig::default(),
         || false,
         checksum_fn,
+        on_frame_progress,
     )
 }
 
 #[cfg(not(feature = "backend-libcdio-sys"))]
-pub fn run_paranoia_on_linux_drive_native_for_level<F>(
+pub fn run_paranoia_on_linux_drive_native_for_level<F, P>(
     _device_path: Option<&str>,
     _paranoia_level: i32,
     _start_lsn: i32,
@@ -813,9 +830,11 @@ pub fn run_paranoia_on_linux_drive_native_for_level<F>(
     _max_frame_retries: u32,
     _retry_policy: &mut RetryPolicy,
     _checksum_fn: F,
+    _on_frame_progress: P,
 ) -> Result<ParanoiaTrackRunResult, CddaReadError>
 where
     F: FnMut(u32, &[Vec<u8>]) -> u32,
+    P: FnMut(usize, usize),
 {
     Err(CddaReadError::ReadFailed(
         "native paranoia backend requires backend-libcdio-sys".to_string(),
@@ -1087,6 +1106,7 @@ mod tests {
                 checks >= 2
             },
             |_pass, _| 0,
+            |_done, _total| {},
         )
         .expect("interrupt should abort run");
 

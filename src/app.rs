@@ -2239,8 +2239,38 @@ fn acquire_track_pcm_from_physical_reader(
                 }
                 acc
             },
+            {
+                let start = Instant::now();
+                let mut last_update = start.checked_sub(Duration::from_secs(1)).unwrap_or(start);
+                move |done: usize, total: usize| {
+                    let now = Instant::now();
+                    let should_update = done == 1
+                        || done >= total
+                        || now.duration_since(last_update) >= Duration::from_millis(400);
+                    if !should_update {
+                        return;
+                    }
+                    let progress = (done as f64 / total.max(1) as f64) * 100.0;
+                    let elapsed = now.duration_since(start).as_secs_f64().max(0.001);
+                    let eta_min = if done >= total {
+                        0.0
+                    } else {
+                        let rate_fps = done as f64 / elapsed;
+                        let remaining_frames = total.saturating_sub(done) as f64;
+                        (remaining_frames / rate_fps) / 60.0
+                    };
+                    print!(
+                        "\rRipping (paranoia): track {}, progress - {:.2}%, ETA - {:.2} min   ",
+                        track_number, progress, eta_min
+                    );
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                    last_update = now;
+                }
+            },
         )
         .map_err(|e| RunWorkflowError::Runtime(format!("physical paranoia run failed: {e:?}")))?;
+
+        println!();
 
         if run.state == RipState::Failed {
             return Err(RunWorkflowError::Runtime(format!(
@@ -3000,6 +3030,7 @@ fn acquire_tracks_pcm_from_image_reader(
                     }
                     acc
                 },
+                |_done, _total| {},
             )
             .map_err(|e| {
                 RunWorkflowError::Runtime(format!("image paranoia run failed: {e:?}"))
