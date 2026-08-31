@@ -2,6 +2,15 @@
 
 Milestone status vocabulary in headings follows: complete, in progress, planned, deferred.
 
+## 2026-08-31
+
+### Runtime: Diagnostic Logging via `log`/`env_logger`
+- Added `log` and `env_logger` dependencies in [../Cargo.toml](../Cargo.toml) and initialized the logger in [../src/main.rs](../src/main.rs) with a default `warn` filter level, overridable via `RUST_LOG`.
+- Converted diagnostic `eprintln!`/`println!` warnings in [../src/app.rs](../src/app.rs) (paranoia non-convergence, persisted AccurateRip mismatch, output filename collisions, metadata-flow lookup warnings) to `log::warn!`/`log::error!`, and surfaced metadata-flow warnings immediately after metadata lookup instead of only in the final rip summary.
+- Added a `log::warn!` on each MusicBrainz HTTP 503 retry attempt in [../src/metadata/musicbrainz.rs](../src/metadata/musicbrainz.rs), so retries are visible before ripping starts.
+- Left the rip summary/report text, per-track progress lines, and `-I`/`-J`/`-Y` mode outputs as direct `println!` to preserve upstream `cyanrip` (C) output parity.
+- Added [logging.md](logging.md), documenting the logging facility, verbosity control, and the split between logged diagnostics and protocol-output console text.
+
 ## 2026-08-28
 
 ### Documentation: `-M/--cue-scheme` Option Flow

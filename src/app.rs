@@ -2262,8 +2262,8 @@ fn acquire_track_pcm_from_physical_reader(
         };
 
         if paranoia_run_did_not_converge(run.state, &run.events) {
-            eprintln!(
-                "WARN paranoia read for track {} did not fully converge (state {:?}); using best-effort corrected frames",
+            log::warn!(
+                "paranoia read for track {} did not fully converge (state {:?}); using best-effort corrected frames",
                 track_number, run.state
             );
         }
@@ -3206,6 +3206,10 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
                 ));
             }
 
+            for warning in &mf.warnings {
+                log::warn!("{warning}");
+            }
+
             if let Some(release) = mf.musicbrainz.as_ref()
                 && let Some(album_artist) = release.album_artist.as_deref()
             {
@@ -3412,8 +3416,8 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
                         );
                         continue;
                     }
-                    eprintln!(
-                        "ERROR AccurateRip mismatch persisted on track {} after {} attempt(s); failing exact-rip enforcement.",
+                    log::error!(
+                        "AccurateRip mismatch persisted on track {} after {} attempt(s); failing exact-rip enforcement",
                         boundary.track_number,
                         track_attempt
                     );
@@ -3507,9 +3511,6 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
                     ));
                 }
             }
-        }
-        for warning in &mf.warnings {
-            out.push_str(&format!("WARN {warning}\n"));
         }
     }
 
@@ -4308,8 +4309,8 @@ fn warn_track_path_collisions_for_formats(
         }
 
         for (a, b, path) in detect_track_path_collisions(&collision_input) {
-            println!(
-                "WARNING: tracks {a} and {b} resolve to the same file \"{path}\", one will overwrite the other!"
+            log::warn!(
+                "tracks {a} and {b} resolve to the same file \"{path}\", one will overwrite the other!"
             );
         }
     }
@@ -4411,8 +4412,8 @@ fn write_track_outputs_with_naming_tracks(
                 .map(|(_, track_number, rel, _)| (*track_number, rel.to_string_lossy().to_string()))
                 .collect();
             for (a, b, path) in detect_track_path_collisions(&collision_input) {
-                println!(
-                    "WARNING: tracks {a} and {b} resolve to the same file \"{path}\", one will overwrite the other!"
+                log::warn!(
+                    "tracks {a} and {b} resolve to the same file \"{path}\", one will overwrite the other!"
                 );
             }
         }

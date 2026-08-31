@@ -13,6 +13,16 @@ cargo run --features "backend-libcdio-sys paranoia cdda" -- -s 103 -B ~/rips
 
 When `-B` is provided, it takes precedence over `CYANRIP_RS_OUTPUT_ROOT`.
 
+## Diagnostic Logging
+
+Diagnostic warnings/errors (e.g. MusicBrainz retry/failure, paranoia non-convergence, output filename collisions) are emitted via the `log`/`env_logger` crates and shown by default. Control verbosity with `RUST_LOG`:
+
+```bash
+RUST_LOG=info cargo run --features "backend-libcdio-sys paranoia cdda" -- -s 103 -B ~/rips
+```
+
+See [docs/logging.md](docs/logging.md) for details.
+
 ## Update Workflow
 
 For every PR, update docs as part of the same change set:

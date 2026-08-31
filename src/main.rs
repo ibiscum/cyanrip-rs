@@ -4,6 +4,9 @@ use cyanrip_rs::app::run_workflow;
 use std::path::Path;
 
 fn main() {
+    // Diagnostic warn/error logs are on by default; RUST_LOG overrides verbosity.
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+
     let cfg = match parse_from_env() {
         Ok(cfg) => cfg,
         Err(err) => {

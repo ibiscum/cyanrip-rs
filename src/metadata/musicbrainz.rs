@@ -117,6 +117,12 @@ impl MusicBrainzHttpClient for ReqwestMusicBrainzHttpClient {
 
 			if resp.status().as_u16() == 503 && retry_count < MB_HTTP_503_MAX_RETRIES {
 				let delay = Duration::from_secs(mb_503_retry_delay_secs(retry_count));
+				log::warn!(
+					"MusicBrainz service unavailable (503), retrying in {}s (attempt {} of {})",
+					delay.as_secs(),
+					retry_count + 1,
+					MB_HTTP_503_MAX_RETRIES
+				);
 				retry_count = retry_count.saturating_add(1);
 				sleep_before_mb_retry(delay).await;
 				continue;
