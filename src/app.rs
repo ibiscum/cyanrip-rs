@@ -2260,8 +2260,8 @@ fn acquire_track_pcm_from_physical_reader(
                         (remaining_frames / rate_fps) / 60.0
                     };
                     print!(
-                        "\rRipping (paranoia): track {}, progress - {:.2}%, ETA - {:.2} min   ",
-                        track_number, progress, eta_min
+                        "\rRipping (paranoia): track {}, progress - {:.2}%, ETA - {}   ",
+                        track_number, progress, format_eta_min_sec(eta_min)
                     );
                     let _ = std::io::Write::flush(&mut std::io::stdout());
                     last_update = now;
@@ -2360,7 +2360,7 @@ fn acquire_track_pcm_from_physical_reader(
             };
 
             print!(
-                "\rRipping          : track {}, progress - {:.2}%, ETA - {:.2} min   ", track_number, progress, eta_min);
+                "\rRipping          : track {}, progress - {:.2}%, ETA - {}   ", track_number, progress, format_eta_min_sec(eta_min));
                 let _ = std::io::Write::flush(&mut std::io::stdout());
             last_update = now;
         }
@@ -2767,6 +2767,12 @@ fn format_duration_from_frames(frame_count: usize) -> String {
     let seconds = (frame_count / 75) % 60;
     let centis = ((frame_count % 75) * 100) / 75;
     format!("{minutes:02}:{seconds:02}.{centis:02}")
+}
+
+/// Formats a fractional-minutes ETA (e.g. 1.75) as whole "M:SS".
+fn format_eta_min_sec(eta_min: f64) -> String {
+    let total_secs = (eta_min.max(0.0) * 60.0).round() as u64;
+    format!("{}:{:02}", total_secs / 60, total_secs % 60)
 }
 
 fn samples_from_frames(frame_count: usize) -> usize {
@@ -4381,7 +4387,7 @@ fn write_track_outputs_with_naming_tracks(
         let progress = (completed as f64 / total_jobs as f64) * 100.0;
         let elapsed = progress_started.elapsed().as_secs_f64().max(0.001);
         let eta_label = if completed == 0 {
-            "--.--".to_string()
+            "--:--".to_string()
         } else {
             let eta_min = if completed >= total_jobs {
                 0.0
@@ -4390,11 +4396,11 @@ fn write_track_outputs_with_naming_tracks(
                 let remaining = total_jobs.saturating_sub(completed) as f64;
                 (remaining / rate) / 60.0
             };
-            format!("{eta_min:.2}")
+            format_eta_min_sec(eta_min)
         };
 
         print!(
-            "\rEncoding         : track {}, progress - {:.2}%, ETA - {} min   ", track_number, progress, eta_label
+            "\rEncoding         : track {}, progress - {:.2}%, ETA - {}   ", track_number, progress, eta_label
         );
         let _ = std::io::Write::flush(&mut std::io::stdout());
         if completed >= total_jobs {
