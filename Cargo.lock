@@ -1147,11 +1147,12 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libcdio-sys"
-version = "2.0.0"
+version = "3.0.0+2.4.0p2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a4a29039bac847bf200de57a6172ec66d9e5d3b8a2ca1c86c3a45f393f0baca"
+checksum = "3341bd0c18a38e2a02fe6645b375f007e8023672a59b0c50554954e97c46da3b"
 dependencies = [
  "bindgen",
+ "cc",
  "system-deps",
 ]
 
