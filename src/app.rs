@@ -2260,7 +2260,7 @@ fn acquire_track_pcm_from_physical_reader(
                         (remaining_frames / rate_fps) / 60.0
                     };
                     print!(
-                        "\rRipping (paranoia): track {}, progress - {:.2}%, ETA - {} min   ",
+                        "\rRipping (paranoia)        : track {}, progress - {:.2}%, ETA - {} min   ",
                         track_number, progress, format_eta_min_sec(eta_min)
                     );
                     let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -2299,7 +2299,7 @@ fn acquire_track_pcm_from_physical_reader(
         }
 
         println!(
-            "Paranoia read complete for track {} (passes: {}, state: {:?})",
+            "Ripping (paranoia)        : read complete for track {} (passes: {}, state: {:?})",
             track_number,
             run.passes,
             run.state,
@@ -3380,7 +3380,7 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
             {
                 track_attempt = track_attempt.saturating_add(1);
                 println!(
-                    "Track {} read attempt {} of {}...",
+                    "Ripping (paranoia)        : track {} read attempt {} of {}...",
                     boundary.track_number, track_attempt, max_track_attempts
                 );
             }
@@ -3430,15 +3430,15 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
                     });
                 match conf {
                     Some(v) if v > 0 => println!(
-                        "AccurateRip verified for track {} on attempt {} with confidence {}.",
+                        "AccurateRip               : verified for track {} on attempt {} with confidence {}.",
                         boundary.track_number, track_attempt, v
                     ),
                     Some(0) => println!(
-                        "AccurateRip status found but confidence is 0 for track {} on attempt {}.",
+                        "AccurateRip               : status found but confidence is 0 for track {} on attempt {}.",
                         boundary.track_number, track_attempt
                     ),
                     None => println!(
-                        "AccurateRip verification unavailable for track {} on attempt {}.",
+                        "AccurateRip               : verification unavailable for track {} on attempt {}.",
                         boundary.track_number, track_attempt
                     ),
                     _ => {}
@@ -3446,7 +3446,7 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
                 if conf == Some(-1) {
                     if track_attempt < max_track_attempts {
                         println!(
-                            "AccurateRip mismatch on track {} (attempt {} of {}), retrying track read...",
+                            "AccurateRip               : mismatch on track {} (attempt {} of {}), retrying track read...",
                             boundary.track_number,
                             track_attempt,
                             max_track_attempts
@@ -3454,12 +3454,12 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
                         continue;
                     }
                     log::error!(
-                        "AccurateRip mismatch persisted on track {} after {} attempt(s); failing exact-rip enforcement",
+                        "AccurateRip               : mismatch persisted on track {} after {} attempt(s); failing exact-rip enforcement",
                         boundary.track_number,
                         track_attempt
                     );
                     return Err(RunWorkflowError::Runtime(format!(
-                        "AccurateRip mismatch persisted on track {} after {} attempt(s)",
+                        "AccurateRip               : mismatch persisted on track {} after {} attempt(s)",
                         boundary.track_number, track_attempt
                     )));
                 }
@@ -4400,7 +4400,7 @@ fn write_track_outputs_with_naming_tracks(
         };
 
         print!(
-            "\rEncoding         : track {}, progress - {:.2}%, ETA - {} min   ", track_number, progress, eta_label
+            "\rEncoding                  : track {}, progress - {:.2}%, ETA - {} min   ", track_number, progress, eta_label
         );
         let _ = std::io::Write::flush(&mut std::io::stdout());
         if completed >= total_jobs {
