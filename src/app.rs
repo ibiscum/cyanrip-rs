@@ -2260,7 +2260,7 @@ fn acquire_track_pcm_from_physical_reader(
                         (remaining_frames / rate_fps) / 60.0
                     };
                     print!(
-                        "\rRipping (paranoia): track {}, progress - {:.2}%, ETA - {}   ",
+                        "\rRipping (paranoia): track {}, progress - {:.2}%, ETA - {} min   ",
                         track_number, progress, format_eta_min_sec(eta_min)
                     );
                     let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -2360,7 +2360,7 @@ fn acquire_track_pcm_from_physical_reader(
             };
 
             print!(
-                "\rRipping          : track {}, progress - {:.2}%, ETA - {}   ", track_number, progress, format_eta_min_sec(eta_min));
+                "\rRipping          : track {}, progress - {:.2}%, ETA - {} min   ", track_number, progress, format_eta_min_sec(eta_min));
                 let _ = std::io::Write::flush(&mut std::io::stdout());
             last_update = now;
         }
@@ -4400,7 +4400,7 @@ fn write_track_outputs_with_naming_tracks(
         };
 
         print!(
-            "\rEncoding         : track {}, progress - {:.2}%, ETA - {}   ", track_number, progress, eta_label
+            "\rEncoding         : track {}, progress - {:.2}%, ETA - {} min   ", track_number, progress, eta_label
         );
         let _ = std::io::Write::flush(&mut std::io::stdout());
         if completed >= total_jobs {
