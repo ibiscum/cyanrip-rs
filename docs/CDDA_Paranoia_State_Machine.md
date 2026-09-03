@@ -114,16 +114,26 @@ stateDiagram-v2
     Failed --> [*]
 ```
 
-## Retry Policy (Parity Notes)
+## Frame-Level Retry (Per-Frame Budget)
 
-The retry policy mirrors upstream semantics used by repeated-rip mode:
+Inside each pass, every frame is read individually and retried up to the configured maximum. The budget comes from `--retries` (`settings.max_retries`), which defaults to `10`.
+
+- On each failed read the loop emits `FrameReadError` and stays in `Reading`.
+- When the budget is exhausted, the loop emits `FrameSubstitutedSilence`, replaces the frame with a zero-filled silent frame, and continues.
+- This matches upstream `cyanrip_read_frame` behavior and does **not** abort the track.
+
+The frame-level retry loop lives in `src/cdda/reader.rs` (`run_track_with_paranoia_heuristics_interruptible`).
+
+## Retry Policy (Track-Level Repeat-Rip)
+
+After a complete pass, the whole-track checksum is evaluated by `RetryPolicy::on_checksum` in `src/cdda/paranoia.rs`. The policy mirrors upstream repeated-rip mode:
 
 - required_matches = ripping_retries
 - total attempts capped by max_retries
 - checksum match count is computed against prior attempts
 - if next pass is potentially final, start encode path for that attempt
 
-This behavior is modeled by RetryPolicy::on_checksum in src/cdda/paranoia.rs.
+So `--retries` governs both the per-frame retry budget and the total repeat-rip attempt cap, while `--repeat-rips` sets the checksum-match goal.
 
 ## Native Paranoia Engine Integration
 

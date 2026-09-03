@@ -59,21 +59,26 @@ If level is `0`, paranoia loops are skipped.
 
 ### Physical-drive path
 
-When active, the physical reader path runs a paranoia precheck before direct frame reads:
+When active, the physical reader path runs an integrated paranoia frame loop:
 - uses level-specific defaults and heuristics,
-- applies retry policy and max-retry caps,
-- validates completion state,
-- then proceeds to direct read path.
+- applies per-frame retry cap and whole-pass repeat-rip policy,
+- produces paranoia-corrected frames that are converted directly to PCM,
+- validates completion state.
+
+There is no separate "precheck then raw reread" step: the frames returned by the paranoia reader are the same frames consumed for checksum and encode decisions.
 
 ### Image-reader path
 
-When active, the image reader executes paranoia heuristics/interruptible runs before PCM acquisition for each selected boundary.
+When active, the image reader executes paranoia heuristics/interruptible runs and returns finalized frames for PCM acquisition for each selected boundary.
 
 ### Retry interaction
 
-Paranoia runs integrate with:
-- `--retries` (`settings.max_retries`) for cap behavior,
-- `--repeat-rips` (`settings.ripping_retries`) for checksum-match retry policy.
+Paranoia runs integrate with `--retries` and `--repeat-rips` at two nested levels:
+
+1. **Frame-level retry** (`--retries`, default `10`): each frame is retried up to the cap before it is replaced with silence and the pass continues.
+2. **Track-level retry** (`--repeat-rips` goal, `--retries` budget): whole-pass checksums are compared across repeated reads; the pass is repeated until the required match count is reached or the retry budget is exhausted.
+
+Both levels are driven by `settings.max_retries`, while `--repeat-rips` sets the checksum-match threshold (`settings.ripping_retries`).
 
 ## Info Reporting
 

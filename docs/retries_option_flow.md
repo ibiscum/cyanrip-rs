@@ -46,21 +46,35 @@ The report prints `Frame retries` from `settings.max_retries` so the active retr
 
 ### Full-rip image and physical flows
 
-When paranoia mode is active (`paranoia_level > 0`), retry wiring uses `settings.max_retries` in two places:
+When paranoia mode is active (`paranoia_level > 0`), retry wiring uses `settings.max_retries` in two nested levels:
 
-- Retry policy construction for repeat-rip matching:
-  - `RetryPolicy::new(settings.ripping_retries as u32, settings.max_retries.max(1) as u32)`
-- Paranoia run limit passed into track runners:
-  - `settings.max_retries.max(0) as u32`
+1. **Frame-level retry** inside each pass
+   - Each individual frame is read up to `max_retries` times before it is considered unrecoverable.
+   - Source: `run_track_with_paranoia_heuristics_interruptible` in `src/cdda/reader.rs`.
+   - Default: `10` retries per frame.
+   - An unrecoverable frame is replaced with a silent frame and the pass continues; the track is not aborted.
+
+2. **Track-level (whole-pass) retry**
+   - After a complete pass finishes, its whole-track checksum is compared against prior passes.
+   - Source: `RetryPolicy::on_checksum` in `src/cdda/paranoia.rs`.
+   - `RetryPolicy::new(settings.ripping_retries as u32, settings.max_retries.max(1) as u32)`
+     - `ripping_retries` = required matching-pass count (`required_matches`).
+     - `max_retries` = total attempt cap for the repeat-rip policy.
+   - If the checksum does not match the required number of prior passes and the budget is exhausted, the runner finalizes with the best-effort pass.
 
 This means:
-- `max_retries` provides a hard cap for retry attempts.
+- `max_retries` provides a hard cap for both per-frame retries and total repeat-rip attempts.
 - `ripping_retries` controls checksum-match goals, while `max_retries` limits total retry budget.
+
+### Overread interaction
+
+Frame-level reads that extend past the disc boundary are clipped and replaced with silence unless `--overread` is enabled. Overread is disabled by default; see [offset_option_flow.md](offset_option_flow.md).
 
 ## Behavior Notes
 
 - `max_retries` is clamped differently by call site (`max(1)` for policy construction, `max(0)` for runner cap) before conversion to `u32`.
 - If paranoia mode is disabled (`paranoia_level == 0`), paranoia retry loops are not executed.
+- Frame-level retry silence substitution matches upstream `cyanrip_read_frame` behavior.
 
 ## Related Options
 
