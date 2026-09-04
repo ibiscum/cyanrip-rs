@@ -613,9 +613,12 @@ fn run_mode_full_rip_bridge_emits_per_track_summary_blocks() {
     );
 
     assert_eq!(code, 0, "full-rip run should succeed: {out}");
-    assert!(out.contains("Track 1 summary:"), "missing summary for track 1: {out}");
-    assert!(out.contains("Track 2 summary:"), "missing summary for track 2: {out}");
+    let summary_count = out.matches("\nSummary:").count();
+    assert!(summary_count >= 2, "expected at least two upstream-style Summary blocks, got {summary_count}: {out}");
+    assert!(out.contains("  Integrated loudness:"), "missing integrated loudness block: {out}");
     assert!(out.contains("  Properties:"), "missing properties block: {out}");
+    assert!(out.contains("  EAC CRC32:"), "missing EAC CRC32 line: {out}");
+    assert!(out.contains("  Accurip:"), "missing Accurip line: {out}");
     assert!(out.contains("  Metadata:"), "missing metadata block: {out}");
     assert!(out.contains("  File(s):"), "missing file list block: {out}");
 

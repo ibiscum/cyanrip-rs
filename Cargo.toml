@@ -30,6 +30,8 @@ flacenc = { version = "0.5.1", default-features = false }
 metaflac = "0.2.8"
 libcdio-sys = { version = "2.0.0", default-features = false, features = ["cdda", "paranoia"], optional = true }
 tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }
+ebur128 = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [dev-dependencies]
 wiremock = "0.6.5"

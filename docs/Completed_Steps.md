@@ -209,8 +209,19 @@ Run-path progress:
 - Default `Run` full-rip path now uses reader selection from CLI device kind (image vs physical), acquires frames through the selected reader bridge, and writes outputs via the existing writer flow.
 - Default `Run` full-rip bridge now supports selected-track output generation from CLI track selection (`-l`) across configured output formats.
 - Default `Run` full-rip bridge now runs paranoia/retry validation during frame acquisition before encoding/writing track outputs.
-- Default `Run` physical full-rip bridge now opens a single native libcdio-paranoia session reader at session start, passes a mutable reference into each track acquisition call, and drops the reader after the last track, matching upstream `ctx->paranoia` lifetime. This removes the per-track reopen that caused spurious `MediaChanged` aborts on some drive/kernel combinations.
-- Default `Run` full-rip bridge now maps per-track start LSN by selected track number and emits explicit track boundary lines in runtime output.
+- Default `Run` full-rip bridge now computes per-track AccurateRip v1 checksums from drive-offset-corrected PCM after acquisition and compares them against the AccuRip DB response. Emits per-track console messages:
+  - `verified ... with confidence N` when the checksum matches a DB entry with confidence > 0.
+  - `status found but confidence is 0` when the DB entry list exists but contains no confident match.
+  - `verification unavailable` when the AccuRip DB lookup succeeded but returned no entries for that specific track.
+  - `mismatch ... retrying track read` / `mismatch persisted` when the checksum does not match and exact-rip enforcement is enabled.
+- Default `Run` physical full-rip bridge now opens a single native libcdio-paranoia session reader at session start, passes a mutable reference into each track acquisition call, and drops the reader after the last track, matching upstream `ctx->paranoia` lifetime. This removes the per-track reopen that caused spurious `MediaChanged` aborts on some drive/kernel combinations.- Default `Run` full-rip bridge now prints an upstream-style per-track `Summary:` block after each track is encoded. The block includes:
+  - EBU R128 integrated loudness (`I`) and threshold, loudness range (`LRA`) with low/high, true peak, and sample peak.
+  - Preemphasis detection status (`none detected` / `detected`).
+  - Track properties: duration in MM:SS.ff, samples, frames, start/end LSN, end LSN with offset, and pregap LSN when present.
+  - EAC CRC32 and AccurateRip v1/v2 checksums with DB confidence reporting.
+  - Full metadata block (album/track MBIDs, title, artist, disc IDs, release metadata, creation time, ReplayGain/R128 gain values).
+  - Embedded cover art list and written file paths.
+  - The summary text is also appended to the runtime log file.- Default `Run` full-rip bridge now maps per-track start LSN by selected track number and emits explicit track boundary lines in runtime output.
 - Default `Run` full-rip bridge now supports TOC-like boundary overrides via track metadata (`start_lsn`, `frames`, `end_lsn`) with deterministic fallback.
 - Default `Run` image-source full-rip bridge now supports `CYANRIP_RS_IMAGE_TOC` boundary overrides (`track:start-end`), taking precedence over track metadata boundaries.
 - Default `Run` image-source full-rip bridge now derives per-track starts from CUE `INDEX 01` entries when running with `-d *.cue`, and computes frame spans from adjacent track starts.

@@ -18,5 +18,6 @@ pub struct ProcessedPcmTrackData {
 }
 
 pub mod flac;
+pub mod loudness;
 pub mod process;
 pub mod wav;
