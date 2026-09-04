@@ -1,5 +1,20 @@
 # Migration Changelog
 
+## 2026-09-05
+
+### Runtime: Reuse One Native Paranoia Reader Per Physical Rip Session
+- Added session-level native paranoia reader helpers in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs):
+  - `open_native_paranoia_reader` opens a single `NativeParanoiaFrameReader` for reuse across a full physical rip.
+  - `run_with_native_paranoia_reader` runs one track through an already-open reader so the underlying `cdrom_paranoia` context is not reinitialized between tracks.
+- Refactored [../src/app.rs](../src/app.rs) physical-track acquisition to accept an optional `&mut NativeParanoiaFrameReader`:
+  - `acquire_track_pcm_from_physical_reader` now uses the supplied reader when present, otherwise falls back to the previous per-track opener.
+  - `acquire_tracks_pcm_from_physical_reader` now forwards the optional reader reference into each track call.
+  - `run_full_rip_from_selected_source` opens one native paranoia reader at the start of a physical paranoia session and drops it after the last track, analogous to upstream `cyanrip_ctx_end`.
+- Fixed the spurious `MediaChanged` abort (e.g., track 5 with `retry-limit-reached false`) caused by reopening the libcdio-paranoia context for each track. Some drive/kernel combinations report positive `cdio_get_media_changed` on the new handle, aborting the run before any frames finalize.
+- Compilation verified with `cargo check --features "backend-libcdio-sys paranoia cdda"`; all tests compile with `cargo test --features "backend-libcdio-sys paranoia cdda" --no-run`.
+
+
+
 Milestone status vocabulary in headings follows: complete, in progress, planned, deferred.
 
 ## 2026-09-01

@@ -1,6 +1,6 @@
 # Parity Matrix (C -> Rust)
 
-Last updated: 2026-08-28
+Last updated: 2026-09-05
 
 Legend:
 - Complete: Implemented in Rust with regression tests.
@@ -53,8 +53,8 @@ Source baseline is /cyanrip/src.
 | FLAC metadata embedding | cyanrip_encode.c + cyanrip_main.c metadata flow | propagate album/track/disc metadata into FLAC Vorbis comments and attach cover art when enabled | src/app.rs write_track_outputs + metaflac | Complete (FLAC scope) | Yes |
 | HDCD/deemphasis option handling | cyanrip_encode.c + cyanrip_main.c | processing-path selection precedence: HDCD over deemphasis; -W disables auto-deemphasis; -E forces deemphasis unless HDCD path is selected | src/audio/process.rs + src/app.rs | Complete (ffmpeg hdcd backend wired; 24-bit output propagation for WAV/FLAC) | Yes |
 | FIFO frame/packet queues | fifo_frame.c + fifo_packet.c | thread-safe producer-consumer queues | src/audio/queue.rs | Planned | No |
-| Paranoia ripping state machine | cyanrip_main.c + cdio/paranoia callbacks | retry loop, retry-limit finalize, media-changed abort, and flush/finalize transitions | src/cdda/paranoia.rs + src/cdda/reader.rs + src/app.rs | In progress (state machine wired, but full-rip path still uses precheck plus separate direct read; integrated loop and callback parity pending) | Yes |
-| CD image + drive access | cyanrip_main.c + libcdio/paranoia | media read, retries, hot-remove checks | src/cdda/reader.rs + src/cdda/linux_drive.rs + src/app.rs | In progress (image-backed + Linux adapters wired; upstream-style integrated paranoia transport parity and broader real-drive parity still pending) | Yes |
+| Paranoia ripping state machine | cyanrip_main.c + cdio/paranoia callbacks | retry loop, retry-limit finalize, media-changed abort, and flush/finalize transitions | src/cdda/paranoia.rs + src/cdda/reader.rs + src/app.rs | In progress (state machine wired and consumed by physical full-rip; precheck-plus-direct-read split removed for paranoia-enabled paths) | Yes |
+| CD image + drive access | cyanrip_main.c + libcdio/paranoia | media read, retries, hot-remove checks | src/cdda/reader.rs + src/cdda/linux_drive.rs + src/app.rs | In progress (image-backed + Linux adapters wired; one native paranoia session reader is now opened per physical rip and reused across tracks, matching upstream `ctx->paranoia` lifetime; broader real-drive parity still pending) | Yes |
 | ReplayGain and EBU R128 | cyanrip_main.c + cyanrip_encode.c | album/track loudness metadata computation | src/app.rs FLAC tag flow | In progress (FLAC ReplayGain Vorbis tags emitted; `-K/--no-replaygain` disables tag generation; full EBU R128 and broader codec parity still pending) | Yes (FLAC scope) |
 | Full codec parity set | cyanrip_encode.c | FLAC, MP3, TTA, OPUS, AAC, WV, VORBIS, ALAC, WAV, PCM | src/audio/codecs/* | Deferred (out of current scope: FLAC-only target) | No |
 
@@ -62,13 +62,12 @@ Source baseline is /cyanrip/src.
 
 - Implemented and test-covered: core settings and validation logic from CLI/control path plus deterministic naming/cue/log/checksum modules, all M3 metadata core modules, and metadata-flow orchestration.
 - Major gaps: CD I/O backend integration and broader end-to-end real-drive parity hardening.
-- Paranoia mode status: control-path state machine is now consumed by both image and physical full-rip bridge paths, but current runtime flow still uses precheck plus direct-read in paranoia-enabled paths. Upstream-style single-pass integrated paranoia read plus callback parity remains pending.
+- Paranoia mode status: control-path state machine is consumed by physical full-rip bridge path. Paranoia-enabled physical runs now reuse a single native reader for all tracks and consume paranoia-produced frames directly; the precheck-plus-direct-read split is removed for those runs. Callback/status parity and edge-case coverage on real hardware remain pending.
 - Deferred explicitly: full codec parity and remaining ReplayGain/EBU R128 parity outside current FLAC-scope path.
 
 ## Immediate Next Slice
 
-1. Land upstream-integrated paranoia loop parity: remove precheck-plus-direct-read split and consume paranoia-produced frames directly in the rip path.
-2. Validate libcdio-backed Linux adapter on real hardware and complete callback/paranoia parity checks.
-3. Keep unsupported codecs behind explicit deferred errors (FLAC-only target).
-4. Revisit non-FLAC codec scope only if project direction changes.
-5. Keep error semantics aligned to this parity matrix and update statuses as features land.
+1. Validate libcdio-backed Linux adapter on real hardware and complete callback/paranoia parity checks.
+2. Keep unsupported codecs behind explicit deferred errors (FLAC-only target).
+3. Revisit non-FLAC codec scope only if project direction changes.
+4. Keep error semantics aligned to this parity matrix and update statuses as features land.

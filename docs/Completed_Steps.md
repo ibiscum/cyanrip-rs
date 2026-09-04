@@ -1,6 +1,6 @@
 # Completed Steps
 
-Last updated: 2026-08-28
+Last updated: 2026-09-05
 
 This document summarizes completed migration steps and major code changes.
 
@@ -209,6 +209,7 @@ Run-path progress:
 - Default `Run` full-rip path now uses reader selection from CLI device kind (image vs physical), acquires frames through the selected reader bridge, and writes outputs via the existing writer flow.
 - Default `Run` full-rip bridge now supports selected-track output generation from CLI track selection (`-l`) across configured output formats.
 - Default `Run` full-rip bridge now runs paranoia/retry validation during frame acquisition before encoding/writing track outputs.
+- Default `Run` physical full-rip bridge now opens a single native libcdio-paranoia session reader at session start, passes a mutable reference into each track acquisition call, and drops the reader after the last track, matching upstream `ctx->paranoia` lifetime. This removes the per-track reopen that caused spurious `MediaChanged` aborts on some drive/kernel combinations.
 - Default `Run` full-rip bridge now maps per-track start LSN by selected track number and emits explicit track boundary lines in runtime output.
 - Default `Run` full-rip bridge now supports TOC-like boundary overrides via track metadata (`start_lsn`, `frames`, `end_lsn`) with deterministic fallback.
 - Default `Run` image-source full-rip bridge now supports `CYANRIP_RS_IMAGE_TOC` boundary overrides (`track:start-end`), taking precedence over track metadata boundaries.

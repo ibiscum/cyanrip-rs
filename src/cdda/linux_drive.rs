@@ -5,6 +5,79 @@ use super::reader::{
     run_track_with_paranoia_heuristics_interruptible,
 };
 
+/// Opens a single native libcdio-paranoia session reader to be reused across
+/// all tracks in a physical full-rip session, matching upstream's single
+/// `ctx->paranoia` lifetime.
+#[cfg(feature = "backend-libcdio-sys")]
+pub fn open_native_paranoia_reader(
+    device_path: Option<&str>,
+    paranoia_level: i32,
+    max_frame_retries: u32,
+) -> Result<NativeParanoiaFrameReader, CddaReadError> {
+    let mode = super::paranoia::paranoia_mode_from_level(paranoia_level)
+        .map_err(CddaReadError::ReadFailed)?;
+    NativeParanoiaFrameReader::open(device_path, mode, max_frame_retries)
+}
+
+#[cfg(not(feature = "backend-libcdio-sys"))]
+pub fn open_native_paranoia_reader(
+    _device_path: Option<&str>,
+    _paranoia_level: i32,
+    _max_frame_retries: u32,
+) -> Result<NativeParanoiaFrameReader, CddaReadError> {
+    Err(CddaReadError::ReadFailed(
+        "native paranoia backend requires backend-libcdio-sys".to_string(),
+    ))
+}
+
+/// Runs one track through an already-open native paranoia reader. The caller
+/// retains ownership of the reader and reuses it for subsequent tracks.
+#[cfg(feature = "backend-libcdio-sys")]
+pub fn run_with_native_paranoia_reader<F, P>(
+    reader: &mut NativeParanoiaFrameReader,
+    start_lsn: i32,
+    frame_count: usize,
+    max_frame_retries: u32,
+    retry_policy: &mut RetryPolicy,
+    checksum_fn: F,
+    on_frame_progress: P,
+) -> Result<ParanoiaTrackRunResult, CddaReadError>
+where
+    F: FnMut(u32, &[Vec<u8>]) -> u32,
+    P: FnMut(usize, usize),
+{
+    run_track_with_paranoia_heuristics_interruptible(
+        reader,
+        start_lsn,
+        frame_count,
+        max_frame_retries,
+        retry_policy,
+        ParanoiaHeuristicConfig::default(),
+        || false,
+        checksum_fn,
+        on_frame_progress,
+    )
+}
+
+#[cfg(not(feature = "backend-libcdio-sys"))]
+pub fn run_with_native_paranoia_reader<F, P>(
+    _reader: &mut NativeParanoiaFrameReader,
+    _start_lsn: i32,
+    _frame_count: usize,
+    _max_frame_retries: u32,
+    _retry_policy: &mut RetryPolicy,
+    _checksum_fn: F,
+    _on_frame_progress: P,
+) -> Result<ParanoiaTrackRunResult, CddaReadError>
+where
+    F: FnMut(u32, &[Vec<u8>]) -> u32,
+    P: FnMut(usize, usize),
+{
+    Err(CddaReadError::ReadFailed(
+        "native paranoia backend requires backend-libcdio-sys".to_string(),
+    ))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DriveTrackTocEntry {
     pub number: u8,
@@ -805,17 +878,13 @@ where
     F: FnMut(u32, &[Vec<u8>]) -> u32,
     P: FnMut(usize, usize),
 {
-    let mode = super::paranoia::paranoia_mode_from_level(paranoia_level)
-        .map_err(CddaReadError::ReadFailed)?;
-    let mut reader = NativeParanoiaFrameReader::open(device_path, mode, max_frame_retries)?;
-    run_track_with_paranoia_heuristics_interruptible(
+    let mut reader = open_native_paranoia_reader(device_path, paranoia_level, max_frame_retries)?;
+    run_with_native_paranoia_reader(
         &mut reader,
         start_lsn,
         frame_count,
         max_frame_retries,
         retry_policy,
-        ParanoiaHeuristicConfig::default(),
-        || false,
         checksum_fn,
         on_frame_progress,
     )

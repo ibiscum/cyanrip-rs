@@ -1,6 +1,6 @@
 # Next Steps
 
-Last updated: 2026-08-28
+Last updated: 2026-09-05
 
 This list tracks remaining work to close migration milestones and release parity.
 
@@ -15,8 +15,8 @@ This list tracks remaining work to close migration milestones and release parity
 - Keep synthetic full-rip path as the hardware-free regression baseline while production path matures.
 
 3. M7 parity: upstream-integrated paranoia loop
-- Replace current precheck-plus-direct-read behavior with one integrated paranoia frame loop for paranoia-enabled runs.
-- Align retry/repair behavior and frame-failure policy to upstream expectations, including callback-driven status accounting.
+- Physical paranoia runs now use one integrated paranoia session reader per full rip.
+- Remaining: align retry/repair behavior and frame-failure policy to upstream expectations, including callback-driven status accounting, on real hardware.
 - Add differential and regression coverage for media-change, retry-limit finalize, and repeat-rip interactions.
 
 4. M7 parity: AccurateRip runtime verification

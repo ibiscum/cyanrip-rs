@@ -2202,9 +2202,13 @@ fn acquire_track_pcm_from_physical_reader(
     frame_count: usize,
     start_lsn: i32,
     track_number: u32,
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    native_reader: Option<&mut crate::cdda::linux_drive::NativeParanoiaFrameReader>,
+    #[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+    _native_reader: Option<&mut ()>,
     _metadata_flow: Option<&MetadataFlowResult>,
 ) -> Result<TrackAcquisitionResult, RunWorkflowError> {
-    use crate::cdda::linux_drive::{open_linux_physical_drive, run_paranoia_on_linux_drive_with_defaults_for_level};
+    use crate::cdda::linux_drive::{open_linux_physical_drive, run_with_native_paranoia_reader, run_paranoia_on_linux_drive_with_defaults_for_level};
 
     let device_path = settings.dev_path.as_deref().or(Some("/dev/cdrom"));
 
@@ -2223,13 +2227,60 @@ fn acquire_track_pcm_from_physical_reader(
             RetryPolicy::disabled()
         };
 
-        let run = run_paranoia_on_linux_drive_with_defaults_for_level(
-            device_path,
-            settings.paranoia_level,
-            start_lsn,
-            frame_count,
-            settings.max_retries.max(0) as u32,
-            &mut retry_policy,
+        let run = if let Some(reader) = native_reader {
+            run_with_native_paranoia_reader(
+                reader,
+                start_lsn,
+                frame_count,
+                settings.max_retries.max(0) as u32,
+                &mut retry_policy,
+                |_pass, pass_frames| {
+                    let mut acc = 0u32;
+                    for frame in pass_frames {
+                        for b in frame {
+                            acc = acc.wrapping_add(*b as u32);
+                        }
+                    }
+                    acc
+                },
+                {
+                    let start = Instant::now();
+                    let mut last_update = start.checked_sub(Duration::from_secs(1)).unwrap_or(start);
+                    move |done: usize, total: usize| {
+                        let now = Instant::now();
+                        let should_update = done == 1
+                            || done >= total
+                            || now.duration_since(last_update) >= Duration::from_millis(400);
+                        if !should_update {
+                            return;
+                        }
+                        let progress = (done as f64 / total.max(1) as f64) * 100.0;
+                        let elapsed = now.duration_since(start).as_secs_f64().max(0.001);
+                        let eta_min = if done >= total {
+                            0.0
+                        } else {
+                            let rate_fps = done as f64 / elapsed;
+                            let remaining_frames = total.saturating_sub(done) as f64;
+                            (remaining_frames / rate_fps) / 60.0
+                        };
+                        print!(
+                            "\rRipping (paranoia)        : track {}, progress - {:.2}%, ETA - {} min   ",
+                            track_number, progress, format_eta_min_sec(eta_min)
+                        );
+                        let _ = std::io::Write::flush(&mut std::io::stdout());
+                        last_update = now;
+                    }
+                },
+            )
+            .map_err(|e| RunWorkflowError::Runtime(format!("physical paranoia run failed: {e:?}")))?
+        } else {
+            run_paranoia_on_linux_drive_with_defaults_for_level(
+                device_path,
+                settings.paranoia_level,
+                start_lsn,
+                frame_count,
+                settings.max_retries.max(0) as u32,
+                &mut retry_policy,
             |_pass, pass_frames| {
                 let mut acc = 0u32;
                 for frame in pass_frames {
@@ -2267,8 +2318,9 @@ fn acquire_track_pcm_from_physical_reader(
                     last_update = now;
                 }
             },
-        )
-        .map_err(|e| RunWorkflowError::Runtime(format!("physical paranoia run failed: {e:?}")))?;
+            )
+            .map_err(|e| RunWorkflowError::Runtime(format!("physical paranoia run failed: {e:?}")))?
+        };
 
         println!();
 
@@ -2387,6 +2439,7 @@ fn acquire_track_pcm_from_physical_reader(
     _frame_count: usize,
     _start_lsn: i32,
     _track_number: u32,
+    _native_reader: Option<&mut ()>,
     _metadata_flow: Option<&MetadataFlowResult>,
 ) -> Result<TrackAcquisitionResult, RunWorkflowError> {
     Err(RunWorkflowError::Runtime(
@@ -3085,6 +3138,10 @@ fn acquire_tracks_pcm_from_image_reader(
 fn acquire_tracks_pcm_from_physical_reader(
     settings: &Settings,
     plans: &[TrackReadPlan],
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    mut native_reader: Option<&mut crate::cdda::linux_drive::NativeParanoiaFrameReader>,
+    #[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+    _native_reader: Option<&mut ()>,
     metadata_flow: Option<&MetadataFlowResult>,
 ) -> Result<Vec<(u32, TrackAcquisitionResult)>, RunWorkflowError> {
     let mut out = Vec::with_capacity(plans.len());
@@ -3098,6 +3155,10 @@ fn acquire_tracks_pcm_from_physical_reader(
                 frame_count,
                 start_lsn,
                 plan.track_number,
+                #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+                native_reader.as_deref_mut(),
+                #[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+                None,
                 metadata_flow,
             )?
         } else {
@@ -3136,6 +3197,25 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
     let cli_cover_arts = initial_cover_arts_from_settings(settings, false)?;
     #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
     let mut track_meta_map = track_meta_map;
+
+    // Open one native paranoia reader for the whole physical session so the
+    // same cdrom_paranoia context is reused across tracks, matching upstream.
+    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+    let mut native_paranoia_reader = if source == FullRipSource::Physical && settings.paranoia_level > 0 {
+        let device_path = settings.dev_path.as_deref().or(Some("/dev/cdrom"));
+        Some(
+            crate::cdda::linux_drive::open_native_paranoia_reader(
+                device_path,
+                settings.paranoia_level,
+                settings.max_retries.max(0) as u32,
+            )
+            .map_err(|e| RunWorkflowError::Runtime(format!("failed to open native paranoia reader: {e:?}")))?,
+        )
+    } else {
+        None
+    };
+    #[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+    let mut native_paranoia_reader = None::<&mut ()>;
     let image_toc_overrides = match source {
         FullRipSource::Image => {
             let map = image_toc_overrides_from_settings(settings, default_frame_count);
@@ -3401,6 +3481,10 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
                 FullRipSource::Physical => acquire_tracks_pcm_from_physical_reader(
                     settings,
                     std::slice::from_ref(boundary),
+                    #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
+                    native_paranoia_reader.as_mut(),
+                    #[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
+                    None,
                     #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
                     metadata_flow.as_ref(),
                     #[cfg(not(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys")))]
