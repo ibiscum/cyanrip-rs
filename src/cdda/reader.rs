@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::cdda::paranoia::{RipEvent, RipState, RetryDecision, RetryPolicy, next_rip_state};
+use crate::cdda::paranoia::{RetryDecision, RetryPolicy, RipEvent, RipState, next_rip_state};
 
 pub const CDDA_FRAME_BYTES: usize = 2352;
 
@@ -522,7 +522,9 @@ mod tests {
     impl CddaFrameReader for PassVariantReader {
         fn seek_frame(&mut self, lsn: i32) -> Result<(), CddaReadError> {
             if lsn != 0 {
-                return Err(CddaReadError::SeekFailed("test reader supports lsn=0 only".to_string()));
+                return Err(CddaReadError::SeekFailed(
+                    "test reader supports lsn=0 only".to_string(),
+                ));
             }
             self.cursor = 0;
             Ok(())
@@ -616,7 +618,9 @@ mod tests {
         assert_eq!(out.state, RipState::TrackComplete);
         assert!(out.events.contains(&RipEvent::FrameSubstitutedSilence));
         assert!(!out.events.contains(&RipEvent::FatalDecodeOrEncodeError));
-        let frames = out.final_frames.expect("track should still finalize frames");
+        let frames = out
+            .final_frames
+            .expect("track should still finalize frames");
         assert_eq!(frames.len(), 3);
         assert_eq!(frames[2], vec![0u8; CDDA_FRAME_BYTES]);
         assert_ne!(frames[0], vec![0u8; CDDA_FRAME_BYTES]);

@@ -110,15 +110,25 @@ fn run_mode_defaults_to_image_reader_full_rip_bridge() {
     assert!(out.contains("Written files: 1"));
 
     let file_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("FILE ")).collect();
-    assert_eq!(file_lines.len(), 1, "expected one written file, output: {out}");
+    assert_eq!(
+        file_lines.len(),
+        1,
+        "expected one written file, output: {out}"
+    );
     for line in file_lines {
         let path = line.trim_start_matches("FILE ").trim();
-        assert!(PathBuf::from(path).exists(), "expected output file to exist: {path}");
+        assert!(
+            PathBuf::from(path).exists(),
+            "expected output file to exist: {path}"
+        );
     }
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
-    assert!(cleanup.is_ok(), "full-rip bridge output root should be removable");
+    assert!(
+        cleanup.is_ok(),
+        "full-rip bridge output root should be removable"
+    );
 }
 
 #[test]
@@ -143,7 +153,11 @@ fn run_mode_hdcd_outputs_24_bit_wav_and_flac_in_single_run() {
     let flac_path = first_file_path_for_extension(&out, ".flac")
         .expect("expected one FLAC output file in run output");
 
-    assert!(wav_path.exists(), "expected WAV output path to exist: {}", wav_path.display());
+    assert!(
+        wav_path.exists(),
+        "expected WAV output path to exist: {}",
+        wav_path.display()
+    );
     assert!(
         flac_path.exists(),
         "expected FLAC output path to exist: {}",
@@ -153,12 +167,16 @@ fn run_mode_hdcd_outputs_24_bit_wav_and_flac_in_single_run() {
     let wav_reader = hound::WavReader::open(&wav_path).expect("written wav should be readable");
     assert_eq!(wav_reader.spec().bits_per_sample, 24);
 
-    let flac_reader = claxon::FlacReader::open(&flac_path).expect("written flac should be readable");
+    let flac_reader =
+        claxon::FlacReader::open(&flac_path).expect("written flac should be readable");
     assert_eq!(flac_reader.streaminfo().bits_per_sample, 24);
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
-    assert!(cleanup.is_ok(), "temporary hdcd output root should be removable");
+    assert!(
+        cleanup.is_ok(),
+        "temporary hdcd output root should be removable"
+    );
 }
 
 #[test]
@@ -185,7 +203,10 @@ fn run_mode_defaults_output_root_to_current_working_directory() {
     );
 
     let file_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("FILE ")).collect();
-    assert!(!file_lines.is_empty(), "expected at least one written file, output: {out}");
+    assert!(
+        !file_lines.is_empty(),
+        "expected at least one written file, output: {out}"
+    );
     for line in file_lines {
         let path = PathBuf::from(line.trim_start_matches("FILE ").trim());
         assert!(
@@ -193,12 +214,19 @@ fn run_mode_defaults_output_root_to_current_working_directory() {
             "expected file path in current working directory root: {}",
             path.display()
         );
-        assert!(path.exists(), "expected output file to exist: {}", path.display());
+        assert!(
+            path.exists(),
+            "expected output file to exist: {}",
+            path.display()
+        );
     }
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&working_root);
-    assert!(cleanup.is_ok(), "cwd output root should be removable after run");
+    assert!(
+        cleanup.is_ok(),
+        "cwd output root should be removable after run"
+    );
 }
 
 #[test]
@@ -226,7 +254,10 @@ fn run_mode_output_root_cli_overrides_env_output_root() {
     );
 
     let file_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("FILE ")).collect();
-    assert!(!file_lines.is_empty(), "expected at least one written file, output: {out}");
+    assert!(
+        !file_lines.is_empty(),
+        "expected at least one written file, output: {out}"
+    );
     for line in file_lines {
         let path = PathBuf::from(line.trim_start_matches("FILE ").trim());
         assert!(
@@ -234,13 +265,20 @@ fn run_mode_output_root_cli_overrides_env_output_root() {
             "expected file path in CLI output root: {}",
             path.display()
         );
-        assert!(path.exists(), "expected output file to exist: {}", path.display());
+        assert!(
+            path.exists(),
+            "expected output file to exist: {}",
+            path.display()
+        );
     }
 
     let _ = fs::remove_file(&cue_path);
     let _ = fs::remove_dir_all(&env_output_root);
     let cleanup = fs::remove_dir_all(&cli_output_root);
-    assert!(cleanup.is_ok(), "CLI output root should be removable after run");
+    assert!(
+        cleanup.is_ok(),
+        "CLI output root should be removable after run"
+    );
 }
 
 #[test]
@@ -283,7 +321,10 @@ fn run_mode_cover_front_uses_cli_output_root() {
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
-    assert!(cleanup.is_ok(), "CLI cover output root should be removable after run");
+    assert!(
+        cleanup.is_ok(),
+        "CLI cover output root should be removable after run"
+    );
 }
 
 #[test]
@@ -318,7 +359,10 @@ fn run_mode_cover_front_uses_env_output_root_when_cli_unset() {
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
-    assert!(cleanup.is_ok(), "env cover output root should be removable after run");
+    assert!(
+        cleanup.is_ok(),
+        "env cover output root should be removable after run"
+    );
 }
 
 #[test]
@@ -352,7 +396,10 @@ fn run_mode_cover_front_defaults_to_working_directory_output_root() {
     );
 
     let cleanup = fs::remove_dir_all(&working_root);
-    assert!(cleanup.is_ok(), "cwd cover output root should be removable after run");
+    assert!(
+        cleanup.is_ok(),
+        "cwd cover output root should be removable after run"
+    );
 }
 
 #[test]
@@ -388,7 +435,10 @@ fn run_mode_log_scheme_uses_cli_output_root() {
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
-    assert!(cleanup.is_ok(), "CLI log output root should be removable after run");
+    assert!(
+        cleanup.is_ok(),
+        "CLI log output root should be removable after run"
+    );
 }
 
 #[test]
@@ -416,7 +466,10 @@ fn run_mode_log_scheme_uses_env_output_root_when_cli_unset() {
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
-    assert!(cleanup.is_ok(), "env log output root should be removable after run");
+    assert!(
+        cleanup.is_ok(),
+        "env log output root should be removable after run"
+    );
 }
 
 #[test]
@@ -445,7 +498,10 @@ fn run_mode_log_scheme_defaults_to_working_directory_output_root() {
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&working_root);
-    assert!(cleanup.is_ok(), "cwd log output root should be removable after run");
+    assert!(
+        cleanup.is_ok(),
+        "cwd log output root should be removable after run"
+    );
 }
 
 #[test]
@@ -481,7 +537,10 @@ fn run_mode_cue_scheme_uses_cli_output_root() {
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
-    assert!(cleanup.is_ok(), "CLI cue output root should be removable after run");
+    assert!(
+        cleanup.is_ok(),
+        "CLI cue output root should be removable after run"
+    );
 }
 
 #[test]
@@ -509,7 +568,10 @@ fn run_mode_cue_scheme_uses_env_output_root_when_cli_unset() {
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
-    assert!(cleanup.is_ok(), "env cue output root should be removable after run");
+    assert!(
+        cleanup.is_ok(),
+        "env cue output root should be removable after run"
+    );
 }
 
 #[test]
@@ -538,7 +600,10 @@ fn run_mode_cue_scheme_defaults_to_working_directory_output_root() {
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&working_root);
-    assert!(cleanup.is_ok(), "cwd cue output root should be removable after run");
+    assert!(
+        cleanup.is_ok(),
+        "cwd cue output root should be removable after run"
+    );
 }
 
 #[test]
@@ -575,15 +640,25 @@ fn run_mode_full_rip_bridge_writes_selected_tracks() {
     assert!(out.contains("TRACK 3 START_LSN 64 FRAMES 32"));
 
     let file_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("FILE ")).collect();
-    assert_eq!(file_lines.len(), 4, "expected four written files, output: {out}");
+    assert_eq!(
+        file_lines.len(),
+        4,
+        "expected four written files, output: {out}"
+    );
     for line in file_lines {
         let path = line.trim_start_matches("FILE ").trim();
-        assert!(PathBuf::from(path).exists(), "expected output file to exist: {path}");
+        assert!(
+            PathBuf::from(path).exists(),
+            "expected output file to exist: {path}"
+        );
     }
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
-    assert!(cleanup.is_ok(), "multi-track full-rip bridge output root should be removable");
+    assert!(
+        cleanup.is_ok(),
+        "multi-track full-rip bridge output root should be removable"
+    );
 }
 
 #[test]
@@ -614,17 +689,32 @@ fn run_mode_full_rip_bridge_emits_per_track_summary_blocks() {
 
     assert_eq!(code, 0, "full-rip run should succeed: {out}");
     let summary_count = out.matches("\nSummary:").count();
-    assert!(summary_count >= 2, "expected at least two upstream-style Summary blocks, got {summary_count}: {out}");
-    assert!(out.contains("  Integrated loudness:"), "missing integrated loudness block: {out}");
-    assert!(out.contains("  Properties:"), "missing properties block: {out}");
-    assert!(out.contains("  EAC CRC32:"), "missing EAC CRC32 line: {out}");
+    assert!(
+        summary_count >= 2,
+        "expected at least two upstream-style Summary blocks, got {summary_count}: {out}"
+    );
+    assert!(
+        out.contains("  Integrated loudness:"),
+        "missing integrated loudness block: {out}"
+    );
+    assert!(
+        out.contains("  Properties:"),
+        "missing properties block: {out}"
+    );
+    assert!(
+        out.contains("  EAC CRC32:"),
+        "missing EAC CRC32 line: {out}"
+    );
     assert!(out.contains("  Accurip:"), "missing Accurip line: {out}");
     assert!(out.contains("  Metadata:"), "missing metadata block: {out}");
     assert!(out.contains("  File(s):"), "missing file list block: {out}");
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
-    assert!(cleanup.is_ok(), "summary test output root should be removable");
+    assert!(
+        cleanup.is_ok(),
+        "summary test output root should be removable"
+    );
 }
 
 #[test]
@@ -659,15 +749,25 @@ fn run_mode_full_rip_bridge_honors_track_boundary_metadata() {
     assert!(out.contains("Written files: 2"));
 
     let file_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("FILE ")).collect();
-    assert_eq!(file_lines.len(), 2, "expected two written files, output: {out}");
+    assert_eq!(
+        file_lines.len(),
+        2,
+        "expected two written files, output: {out}"
+    );
     for line in file_lines {
         let path = line.trim_start_matches("FILE ").trim();
-        assert!(PathBuf::from(path).exists(), "expected output file to exist: {path}");
+        assert!(
+            PathBuf::from(path).exists(),
+            "expected output file to exist: {path}"
+        );
     }
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
-    assert!(cleanup.is_ok(), "boundary-metadata full-rip bridge output root should be removable");
+    assert!(
+        cleanup.is_ok(),
+        "boundary-metadata full-rip bridge output root should be removable"
+    );
 }
 
 #[test]
@@ -705,15 +805,25 @@ fn run_mode_full_rip_bridge_honors_image_toc_env_overrides() {
     assert!(out.contains("Written files: 2"));
 
     let file_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("FILE ")).collect();
-    assert_eq!(file_lines.len(), 2, "expected two written files, output: {out}");
+    assert_eq!(
+        file_lines.len(),
+        2,
+        "expected two written files, output: {out}"
+    );
     for line in file_lines {
         let path = line.trim_start_matches("FILE ").trim();
-        assert!(PathBuf::from(path).exists(), "expected output file to exist: {path}");
+        assert!(
+            PathBuf::from(path).exists(),
+            "expected output file to exist: {path}"
+        );
     }
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
-    assert!(cleanup.is_ok(), "image-toc full-rip bridge output root should be removable");
+    assert!(
+        cleanup.is_ok(),
+        "image-toc full-rip bridge output root should be removable"
+    );
 }
 
 #[test]
@@ -743,15 +853,25 @@ fn run_mode_full_rip_bridge_honors_cue_toc_boundaries() {
     assert!(out.contains("Written files: 2"));
 
     let file_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("FILE ")).collect();
-    assert_eq!(file_lines.len(), 2, "expected two written files, output: {out}");
+    assert_eq!(
+        file_lines.len(),
+        2,
+        "expected two written files, output: {out}"
+    );
     for line in file_lines {
         let path = line.trim_start_matches("FILE ").trim();
-        assert!(PathBuf::from(path).exists(), "expected output file to exist: {path}");
+        assert!(
+            PathBuf::from(path).exists(),
+            "expected output file to exist: {path}"
+        );
     }
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
-    assert!(cleanup.is_ok(), "cue-toc full-rip bridge output root should be removable");
+    assert!(
+        cleanup.is_ok(),
+        "cue-toc full-rip bridge output root should be removable"
+    );
 }
 
 #[test]
@@ -780,15 +900,25 @@ fn run_mode_full_rip_bridge_applies_offset_frame_expansion() {
     assert!(out.contains("Written files: 1"));
 
     let file_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("FILE ")).collect();
-    assert_eq!(file_lines.len(), 1, "expected one written file, output: {out}");
+    assert_eq!(
+        file_lines.len(),
+        1,
+        "expected one written file, output: {out}"
+    );
     for line in file_lines {
         let path = line.trim_start_matches("FILE ").trim();
-        assert!(PathBuf::from(path).exists(), "expected output file to exist: {path}");
+        assert!(
+            PathBuf::from(path).exists(),
+            "expected output file to exist: {path}"
+        );
     }
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
-    assert!(cleanup.is_ok(), "offset-expansion full-rip bridge output root should be removable");
+    assert!(
+        cleanup.is_ok(),
+        "offset-expansion full-rip bridge output root should be removable"
+    );
 }
 
 #[test]
@@ -807,7 +937,18 @@ fn run_mode_full_rip_bridge_with_explicit_paranoia_retries_writes_output() {
     let cue_path_s = cue_path.to_string_lossy().to_string();
     let (code, out) = run_capture_with_env(
         &rust_bin,
-        &["-o", "wav", "-d", &cue_path_s, "-P", "2", "-Z", "1", "-r", "3"],
+        &[
+            "-o",
+            "wav",
+            "-d",
+            &cue_path_s,
+            "-P",
+            "2",
+            "-Z",
+            "1",
+            "-r",
+            "3",
+        ],
         &[("CYANRIP_RS_OUTPUT_ROOT", &output_root_s)],
     );
 
@@ -817,15 +958,25 @@ fn run_mode_full_rip_bridge_with_explicit_paranoia_retries_writes_output() {
     assert!(out.contains("Written files: 1"));
 
     let file_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("FILE ")).collect();
-    assert_eq!(file_lines.len(), 1, "expected one written file, output: {out}");
+    assert_eq!(
+        file_lines.len(),
+        1,
+        "expected one written file, output: {out}"
+    );
     for line in file_lines {
         let path = line.trim_start_matches("FILE ").trim();
-        assert!(PathBuf::from(path).exists(), "expected output file to exist: {path}");
+        assert!(
+            PathBuf::from(path).exists(),
+            "expected output file to exist: {path}"
+        );
     }
 
     let _ = fs::remove_file(&cue_path);
     let cleanup = fs::remove_dir_all(&output_root);
-    assert!(cleanup.is_ok(), "paranoia full-rip bridge output root should be removable");
+    assert!(
+        cleanup.is_ok(),
+        "paranoia full-rip bridge output root should be removable"
+    );
 }
 
 #[test]
@@ -848,7 +999,10 @@ fn info_only_mode_returns_success_with_report() {
         assert!(out.contains("Outputs:        "));
         assert!(out.contains("AccurateRip:    "));
     } else {
-        assert_eq!(code, 1, "unexpected exit code for info-only mode: {code}, output: {out}");
+        assert_eq!(
+            code, 1,
+            "unexpected exit code for info-only mode: {code}, output: {out}"
+        );
         assert!(
             out.contains("TOC read failed") || out.contains("musicbrainz lookup failed"),
             "unexpected info-only error output: {out}"
@@ -874,7 +1028,10 @@ fn info_only_mode_keeps_accurip_enabled_unless_a_is_set() {
             "expected -I -A to disable AccurateRip; output: {out_a}"
         );
     } else {
-        assert_eq!(code, 1, "unexpected exit code for info-only mode: {code}, output: {out}");
+        assert_eq!(
+            code, 1,
+            "unexpected exit code for info-only mode: {code}, output: {out}"
+        );
         assert!(
             out.contains("TOC read failed") || out.contains("musicbrainz lookup failed"),
             "unexpected info-only error output: {out}"
@@ -915,7 +1072,10 @@ fn cue_only_mode_returns_success_with_cue_preview() {
             "unexpected cue metadata output: {out}"
         );
     } else {
-        assert_eq!(code, 1, "unexpected exit code for cue-only mode: {code}, output: {out}");
+        assert_eq!(
+            code, 1,
+            "unexpected exit code for cue-only mode: {code}, output: {out}"
+        );
         assert!(
             out.contains("TOC read failed") || out.contains("musicbrainz lookup failed"),
             "unexpected cue-only error output: {out}"
@@ -957,7 +1117,10 @@ fn find_offset_mode_returns_success_with_report() {
             "unexpected find-offset terminal output: {out}"
         );
     } else {
-        assert_eq!(code, 1, "unexpected exit code for find-offset mode: {code}, output: {out}");
+        assert_eq!(
+            code, 1,
+            "unexpected exit code for find-offset mode: {code}, output: {out}"
+        );
         assert!(
             out.contains("TOC read failed")
                 || out.contains("physical read failed")
@@ -983,7 +1146,10 @@ fn find_offset_mode_prints_c_style_preflight_lines() {
             assert!(out.contains("Opening drive..."));
         }
     } else {
-        assert_eq!(code, 1, "unexpected exit code for find-offset mode: {code}, output: {out}");
+        assert_eq!(
+            code, 1,
+            "unexpected exit code for find-offset mode: {code}, output: {out}"
+        );
         assert!(
             out.contains("TOC read failed")
                 || out.contains("physical read failed")
@@ -1006,7 +1172,10 @@ fn find_offset_mode_rejects_cue_only_combination() {
     let rust_bin = PathBuf::from(env!("CARGO_BIN_EXE_cyanrip-rs"));
 
     let (code, out) = run_capture(&rust_bin, &["-f", "-J", "-o", "flac"]);
-    assert_eq!(code, 2, "unexpected exit code for -f -J parse conflict: {code}, output: {out}");
+    assert_eq!(
+        code, 2,
+        "unexpected exit code for -f -J parse conflict: {code}, output: {out}"
+    );
     assert!(
         out.contains("-f (find drive offset) cannot be used with -J (only generate a CUE sheet)!"),
         "missing parse conflict message for -f -J combination, output: {out}"
@@ -1040,11 +1209,18 @@ fn synthetic_full_rip_mode_writes_real_output_files_when_enabled() {
     assert!(out.contains("Written files: 2"));
 
     let file_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("FILE ")).collect();
-    assert_eq!(file_lines.len(), 2, "expected two written files, output: {out}");
+    assert_eq!(
+        file_lines.len(),
+        2,
+        "expected two written files, output: {out}"
+    );
 
     for line in file_lines {
         let path = line.trim_start_matches("FILE ").trim();
-        assert!(PathBuf::from(path).exists(), "expected output file to exist: {path}");
+        assert!(
+            PathBuf::from(path).exists(),
+            "expected output file to exist: {path}"
+        );
     }
 
     let cleanup = fs::remove_dir_all(&output_root);
@@ -1059,7 +1235,12 @@ fn synthetic_full_rip_mode_supports_image_reader_source() {
 
     let (code, out) = run_capture_with_env(
         &rust_bin,
-        &["-o", "wav", "-a", "album=Reader Album:album_artist=Reader Artist"],
+        &[
+            "-o",
+            "wav",
+            "-a",
+            "album=Reader Album:album_artist=Reader Artist",
+        ],
         &[
             ("CYANRIP_RS_ENABLE_SYNTHETIC_RIP", "1"),
             ("CYANRIP_RS_SYNTHETIC_SOURCE", "image-reader"),
@@ -1072,11 +1253,18 @@ fn synthetic_full_rip_mode_supports_image_reader_source() {
     assert!(out.contains("Written files: 1"));
 
     let file_lines: Vec<&str> = out.lines().filter(|l| l.starts_with("FILE ")).collect();
-    assert_eq!(file_lines.len(), 1, "expected one written file, output: {out}");
+    assert_eq!(
+        file_lines.len(),
+        1,
+        "expected one written file, output: {out}"
+    );
 
     for line in file_lines {
         let path = line.trim_start_matches("FILE ").trim();
-        assert!(PathBuf::from(path).exists(), "expected output file to exist: {path}");
+        assert!(
+            PathBuf::from(path).exists(),
+            "expected output file to exist: {path}"
+        );
     }
 
     let cleanup = fs::remove_dir_all(&output_root);

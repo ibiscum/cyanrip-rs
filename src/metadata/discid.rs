@@ -32,7 +32,10 @@ pub fn compute_discid(tracks: &[DiscTrack]) -> Result<DiscidInfo, DiscidError> {
         return Err(DiscidError::NoTracks);
     }
 
-    if tracks.iter().any(|t| t.start_lsn < 0 || t.end_lsn < 0 || t.end_lsn < t.start_lsn) {
+    if tracks
+        .iter()
+        .any(|t| t.start_lsn < 0 || t.end_lsn < 0 || t.end_lsn < t.start_lsn)
+    {
         return Err(DiscidError::InvalidTrackData);
     }
 
@@ -50,11 +53,20 @@ pub fn compute_discid(tracks: &[DiscTrack]) -> Result<DiscidInfo, DiscidError> {
     sha_input.push_str(&format!("{last_audio_track_number:02X}"));
     sha_input.push_str(&format!("{last:08X}"));
 
-    for track in tracks.iter().take(last_audio_track_index + 1).take(TOC_TRACK_LIMIT) {
+    for track in tracks
+        .iter()
+        .take(last_audio_track_index + 1)
+        .take(TOC_TRACK_LIMIT)
+    {
         let offset = track.start_lsn as u32 + 150;
         sha_input.push_str(&format!("{offset:08X}"));
     }
-    for _ in tracks.iter().take(last_audio_track_index + 1).take(TOC_TRACK_LIMIT).count()..TOC_TRACK_LIMIT {
+    for _ in tracks
+        .iter()
+        .take(last_audio_track_index + 1)
+        .take(TOC_TRACK_LIMIT)
+        .count()..TOC_TRACK_LIMIT
+    {
         sha_input.push_str("00000000");
     }
 
@@ -82,7 +94,10 @@ pub fn compute_discid(tracks: &[DiscTrack]) -> Result<DiscidInfo, DiscidError> {
         let offset = track.start_lsn as u32 + 150;
         mb_submission_url.push_str(&format!("+{offset}"));
     }
-    mb_submission_url.push_str(&format!("&tracks={}&id={discid}", last_audio_track_index + 1));
+    mb_submission_url.push_str(&format!(
+        "&tracks={}&id={discid}",
+        last_audio_track_index + 1
+    ));
 
     Ok(DiscidInfo {
         musicbrainz_discid: discid,

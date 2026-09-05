@@ -3,8 +3,8 @@ pub const MAX_OUTPUTS: usize = 32;
 pub const MAX_PARANOIA_LEVEL: i32 = 3;
 const CD_FRAMESIZE_RAW_DIV4: i32 = 588;
 
-pub mod audio;
 pub mod app;
+pub mod audio;
 pub mod cdda;
 pub mod cli;
 pub mod cue;
@@ -153,8 +153,8 @@ impl Default for Settings {
         Self {
             dev_path: None,
             output_root: None,
-            folder_name_scheme:
-                "{album}{if #releasecomment# > #0# (|releasecomment|)} [{format}]".to_string(),
+            folder_name_scheme: "{album}{if #releasecomment# > #0# (|releasecomment|)} [{format}]"
+                .to_string(),
             track_name_scheme: "{if #totaldiscs# > #1#|disc|.}{track} - {title}".to_string(),
             log_name_scheme: "{album}{if #totaldiscs# > #1# CD|disc|}".to_string(),
             cue_name_scheme: "{album}{if #totaldiscs# > #1# CD|disc|}".to_string(),
@@ -401,7 +401,9 @@ pub fn parse_cover_specs(entries: &[String]) -> Result<Vec<CoverSpec>, String> {
                     return Err(format!("Invalid track idx for cover art: {track_idx}"));
                 }
                 if track_indices.contains(&track_idx) {
-                    return Err(format!("Cover art already specified for track idx {track_idx}!"));
+                    return Err(format!(
+                        "Cover art already specified for track idx {track_idx}!"
+                    ));
                 }
 
                 track_indices.push(track_idx);
@@ -509,13 +511,12 @@ pub fn validate_mode_combo(
     find_drive_offset: bool,
 ) -> Result<(), String> {
     if print_info_only && generate_cue_only {
-        return Err("-J (only generate a CUE sheet) cannot be used with -I (only print info)!"
-            .to_string());
+        return Err(
+            "-J (only generate a CUE sheet) cannot be used with -I (only print info)!".to_string(),
+        );
     }
     if find_drive_offset && print_info_only {
-        return Err(
-            "-f (find drive offset) cannot be used with -I (only print info)!".to_string(),
-        );
+        return Err("-f (find drive offset) cannot be used with -I (only print info)!".to_string());
     }
     if find_drive_offset && generate_cue_only {
         return Err(
@@ -583,9 +584,15 @@ mod tests {
     #[test]
     fn sanitize_regression() {
         assert_eq!(parse_sanitize("simple").unwrap(), SanitizeMethod::Simple);
-        assert_eq!(parse_sanitize("os_simple").unwrap(), SanitizeMethod::OsSimple);
+        assert_eq!(
+            parse_sanitize("os_simple").unwrap(),
+            SanitizeMethod::OsSimple
+        );
         assert_eq!(parse_sanitize("unicode").unwrap(), SanitizeMethod::Unicode);
-        assert_eq!(parse_sanitize("os_unicode").unwrap(), SanitizeMethod::OsUnicode);
+        assert_eq!(
+            parse_sanitize("os_unicode").unwrap(),
+            SanitizeMethod::OsUnicode
+        );
         assert!(parse_sanitize("bad").is_err());
     }
 
@@ -611,7 +618,10 @@ mod tests {
     #[test]
     fn outputs_validation_regression() {
         assert_eq!(parse_outputs(&[]).unwrap(), vec![OutputFormat::Flac]);
-        assert_eq!(parse_outputs(&["help"]).unwrap(), Vec::<OutputFormat>::new());
+        assert_eq!(
+            parse_outputs(&["help"]).unwrap(),
+            Vec::<OutputFormat>::new()
+        );
         assert_eq!(
             parse_outputs(&["flac", "mp3"]).unwrap(),
             vec![OutputFormat::Flac, OutputFormat::Mp3]
@@ -628,10 +638,22 @@ mod tests {
 
     #[test]
     fn pregap_parsing_regression() {
-        assert_eq!(parse_pregap_entry("1=default").unwrap(), (0, PregapAction::Default));
-        assert_eq!(parse_pregap_entry("2=drop").unwrap(), (1, PregapAction::Drop));
-        assert_eq!(parse_pregap_entry("3=merge").unwrap(), (2, PregapAction::Merge));
-        assert_eq!(parse_pregap_entry("4=track").unwrap(), (3, PregapAction::Track));
+        assert_eq!(
+            parse_pregap_entry("1=default").unwrap(),
+            (0, PregapAction::Default)
+        );
+        assert_eq!(
+            parse_pregap_entry("2=drop").unwrap(),
+            (1, PregapAction::Drop)
+        );
+        assert_eq!(
+            parse_pregap_entry("3=merge").unwrap(),
+            (2, PregapAction::Merge)
+        );
+        assert_eq!(
+            parse_pregap_entry("4=track").unwrap(),
+            (3, PregapAction::Track)
+        );
         assert!(parse_pregap_entry("0=drop").is_err());
         assert!(parse_pregap_entry("1=invalid").is_err());
         assert!(parse_pregap_entry("1").is_err());
@@ -716,6 +738,9 @@ mod tests {
             "/tmp/extra.jpg".to_string(),
         ])
         .expect_err("must fail");
-        assert_eq!(err, "No cover art location specified for \"/tmp/extra.jpg\"");
+        assert_eq!(
+            err,
+            "No cover art location specified for \"/tmp/extra.jpg\""
+        );
     }
 }

@@ -105,8 +105,7 @@ fn sample_pcm() -> PcmTrackData {
             bits_per_sample: 16,
         },
         interleaved_i16_samples: vec![
-            0, 10, -10, 300, -300, 1200, -1200, 50, -50, 75, -75, 90, -90, 110, -110, 130,
-            -130,
+            0, 10, -10, 300, -300, 1200, -1200, 50, -50, 75, -75, 90, -90, 110, -110, 130, -130,
         ],
     }
 }
@@ -222,12 +221,18 @@ fn cli_outputs_and_disc_tags_drive_writer_dispatch_and_flac_tags() {
     assert!(flac.exists());
 
     let tag = metaflac::Tag::read_from_path(&flac).expect("flac tag read should work");
-    assert_eq!(first_vorbis_value(&tag, "ALBUM").as_deref(), Some("Example Album"));
+    assert_eq!(
+        first_vorbis_value(&tag, "ALBUM").as_deref(),
+        Some("Example Album")
+    );
     assert_eq!(
         first_vorbis_value(&tag, "ALBUMARTIST").as_deref(),
         Some("Example Artist")
     );
-    assert_eq!(first_vorbis_value(&tag, "TRACKNUMBER").as_deref(), Some("01"));
+    assert_eq!(
+        first_vorbis_value(&tag, "TRACKNUMBER").as_deref(),
+        Some("01")
+    );
     assert_eq!(first_vorbis_value(&tag, "DISCNUMBER").as_deref(), Some("1"));
     assert_eq!(first_vorbis_value(&tag, "DISCTOTAL").as_deref(), Some("2"));
     assert!(has_vorbis_key(&tag, "REPLAYGAIN_TRACK_GAIN"));

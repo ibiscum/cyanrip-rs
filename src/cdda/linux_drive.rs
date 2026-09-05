@@ -221,9 +221,13 @@ impl LinuxDriveBackend for LibcdioSysBackend {
             let c_path = std::ffi::CString::new(path).map_err(|_| {
                 CddaReadError::ReadFailed("device path contains interior NUL byte".to_string())
             })?;
-            unsafe { libcdio_sys::cdio_open(c_path.as_ptr(), libcdio_sys::driver_id_t_DRIVER_UNKNOWN) }
+            unsafe {
+                libcdio_sys::cdio_open(c_path.as_ptr(), libcdio_sys::driver_id_t_DRIVER_UNKNOWN)
+            }
         } else {
-            unsafe { libcdio_sys::cdio_open(std::ptr::null(), libcdio_sys::driver_id_t_DRIVER_UNKNOWN) }
+            unsafe {
+                libcdio_sys::cdio_open(std::ptr::null(), libcdio_sys::driver_id_t_DRIVER_UNKNOWN)
+            }
         };
 
         if ptr.is_null() {
@@ -287,7 +291,9 @@ pub fn open_linux_physical_drive(
 }
 
 #[cfg(feature = "backend-libcdio-sys")]
-pub fn read_drive_toc_tracks(device_path: Option<&str>) -> Result<Vec<DriveTrackTocEntry>, CddaReadError> {
+pub fn read_drive_toc_tracks(
+    device_path: Option<&str>,
+) -> Result<Vec<DriveTrackTocEntry>, CddaReadError> {
     let ptr = if let Some(path) = device_path {
         let c_path = std::ffi::CString::new(path).map_err(|_| {
             CddaReadError::ReadFailed("device path contains interior NUL byte".to_string())
@@ -329,7 +335,8 @@ pub fn read_drive_toc_tracks(device_path: Option<&str>) -> Result<Vec<DriveTrack
             }
 
             let next_start = if i + 1 < count {
-                let next = unsafe { libcdio_sys::cdio_get_track_lsn(ptr, (track_number + 1) as u8) } as i32;
+                let next = unsafe { libcdio_sys::cdio_get_track_lsn(ptr, (track_number + 1) as u8) }
+                    as i32;
                 if next == libcdio_sys::CDIO_INVALID_LSN || next <= start {
                     return Err(CddaReadError::ReadFailed(format!(
                         "invalid next-track LSN for track {track_number}"
@@ -352,13 +359,14 @@ pub fn read_drive_toc_tracks(device_path: Option<&str>) -> Result<Vec<DriveTrack
                 x if x == libcdio_sys::track_format_t_TRACK_FORMAT_XA => true,
                 x if x == libcdio_sys::track_format_t_TRACK_FORMAT_DATA => true,
                 x if x == libcdio_sys::track_format_t_TRACK_FORMAT_PSX => true,
-                x if x == libcdio_sys::track_format_t_TRACK_FORMAT_ERROR => {
-                    unsafe { libcdio_sys::cdio_get_track_green(ptr, track_number) }
-                }
+                x if x == libcdio_sys::track_format_t_TRACK_FORMAT_ERROR => unsafe {
+                    libcdio_sys::cdio_get_track_green(ptr, track_number)
+                },
                 _ => false,
             };
 
-            let raw_pregap = unsafe { libcdio_sys::cdio_get_track_pregap_lsn(ptr, track_number) } as i32;
+            let raw_pregap =
+                unsafe { libcdio_sys::cdio_get_track_pregap_lsn(ptr, track_number) } as i32;
             let pregap_lsn = if raw_pregap == libcdio_sys::CDIO_INVALID_LSN || raw_pregap == start {
                 None
             } else {
@@ -383,7 +391,9 @@ pub fn read_drive_toc_tracks(device_path: Option<&str>) -> Result<Vec<DriveTrack
 }
 
 #[cfg(not(feature = "backend-libcdio-sys"))]
-pub fn read_drive_toc_tracks(_device_path: Option<&str>) -> Result<Vec<DriveTrackTocEntry>, CddaReadError> {
+pub fn read_drive_toc_tracks(
+    _device_path: Option<&str>,
+) -> Result<Vec<DriveTrackTocEntry>, CddaReadError> {
     Err(CddaReadError::ReadFailed(
         "drive TOC access requires backend-libcdio-sys".to_string(),
     ))
@@ -411,7 +421,11 @@ pub fn read_drive_hwinfo(device_path: Option<&str>) -> Option<DriveHwInfo> {
         return None;
     }
     let to_str = |arr: &[i8]| -> String {
-        let bytes: Vec<u8> = arr.iter().take_while(|&&b| b != 0).map(|&b| b as u8).collect();
+        let bytes: Vec<u8> = arr
+            .iter()
+            .take_while(|&&b| b != 0)
+            .map(|&b| b as u8)
+            .collect();
         String::from_utf8_lossy(&bytes).trim().to_string()
     };
     Some(DriveHwInfo {
@@ -445,9 +459,7 @@ pub fn eject_linux_drive_if_supported(device_path: Option<&str>) -> bool {
     let mut read_cap: libcdio_sys::cdio_drive_read_cap_t = 0;
     let mut write_cap: libcdio_sys::cdio_drive_write_cap_t = 0;
     let mut misc_cap: libcdio_sys::cdio_drive_misc_cap_t = 0;
-    unsafe {
-        libcdio_sys::cdio_get_drive_cap(ptr, &mut read_cap, &mut write_cap, &mut misc_cap)
-    };
+    unsafe { libcdio_sys::cdio_get_drive_cap(ptr, &mut read_cap, &mut write_cap, &mut misc_cap) };
 
     let can_eject = (misc_cap & libcdio_sys::cdio_drive_cap_misc_t_CDIO_DRIVE_CAP_MISC_EJECT) != 0;
     if !can_eject {
@@ -853,7 +865,10 @@ impl CddaFrameReader for NativeParanoiaFrameReader {
     fn media_changed(&self) -> bool {
         let p_cdio = unsafe { (*self.drive).p_cdio };
         let code = unsafe { libcdio_sys::cdio_get_media_changed(p_cdio) };
-        media_changed_from_code(code as i32, libcdio_sys::driver_return_code_t_DRIVER_OP_UNSUPPORTED)
+        media_changed_from_code(
+            code as i32,
+            libcdio_sys::driver_return_code_t_DRIVER_OP_UNSUPPORTED,
+        )
     }
 
     fn take_native_callback_counts(&mut self) -> Option<ParanoiaCallbackCounters> {
@@ -980,7 +995,9 @@ mod tests {
                 )));
             }
             if self.fail_lsns.contains(&lsn) {
-                return Err(CddaReadError::ReadFailed(format!("mock read fail at {lsn}")));
+                return Err(CddaReadError::ReadFailed(format!(
+                    "mock read fail at {lsn}"
+                )));
             }
             let frame = self
                 .frames
@@ -1053,8 +1070,7 @@ mod tests {
         let (mut backend, _state) = MockBackend::new();
         backend.media_changed_code = 5;
 
-        let reader =
-            LinuxPhysicalDriveReader::new(backend, Some("/dev/cdrom")).expect("mock open");
+        let reader = LinuxPhysicalDriveReader::new(backend, Some("/dev/cdrom")).expect("mock open");
         assert!(reader.media_changed());
     }
 
@@ -1118,7 +1134,10 @@ mod tests {
 
     #[test]
     fn level_based_defaults_enable_verify_overlap_for_higher_levels() {
-        assert_eq!(heuristics_for_paranoia_level(0), ParanoiaHeuristicConfig::default());
+        assert_eq!(
+            heuristics_for_paranoia_level(0),
+            ParanoiaHeuristicConfig::default()
+        );
         assert_eq!(
             heuristics_for_paranoia_level(1),
             ParanoiaHeuristicConfig::default()
@@ -1147,8 +1166,7 @@ mod tests {
         )
         .expect("run should complete");
         assert!(
-            out
-                .callback_counters
+            out.callback_counters
                 .get(crate::cdda::reader::ParanoiaCallbackKind::Verify)
                 >= 1
         );

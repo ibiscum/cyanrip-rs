@@ -21,6 +21,7 @@ This list tracks remaining work to close migration milestones and release parity
 
 4. M7 parity: AccurateRip runtime verification
 - Wire rip-time AccurateRip checksum generation/match reporting into run path.
+- Retry-on-AccurateRip-mismatch has been removed to match upstream; `--repeat-rips` compares EAC CRC32 across passes instead.
 - Feed finish-summary parity lines from runtime match outcomes.
 
 5. M7 parity: MusicBrainz NotFound submission URL coverage

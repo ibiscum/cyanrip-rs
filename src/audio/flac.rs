@@ -9,10 +9,7 @@ use crate::audio::ProcessedPcmTrackData;
 #[derive(Debug)]
 pub enum FlacWriteError {
     InvalidSpec(&'static str),
-    ChannelAlignment {
-        channels: u16,
-        sample_count: usize,
-    },
+    ChannelAlignment { channels: u16, sample_count: usize },
     Config(String),
     Encode(String),
     Io(std::io::Error),
@@ -146,9 +143,9 @@ mod tests {
                 bits_per_sample: 16,
             },
             interleaved_i32_samples: vec![
-                0, 1000, -1000, 32767, -32768, 42, 120, -120, 345, -345, 789, -789, 2000,
-                -2000, 1111, -1111, 4321, -4321, 99, -99, 12, -12, 34, -34, 56, -56, 78, -78,
-                90, -90, 321, -321,
+                0, 1000, -1000, 32767, -32768, 42, 120, -120, 345, -345, 789, -789, 2000, -2000,
+                1111, -1111, 4321, -4321, 99, -99, 12, -12, 34, -34, 56, -56, 78, -78, 90, -90,
+                321, -321,
             ],
         }
     }
@@ -169,9 +166,7 @@ mod tests {
             .samples()
             .map(|x| x.expect("sample decode should work"))
             .collect();
-        let expected: Vec<i32> = track
-            .interleaved_i32_samples
-            .to_vec();
+        let expected: Vec<i32> = track.interleaved_i32_samples.to_vec();
         assert_eq!(samples, expected);
     }
 

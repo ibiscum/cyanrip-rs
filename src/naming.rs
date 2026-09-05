@@ -173,10 +173,7 @@ pub fn sanitize_text(ctx: &NamingContext, input: &str, sanitize_fwdslash: bool) 
             quote_match = !quote_match;
             Some(r)
         } else {
-            CHAR_REPLACEMENTS
-                .iter()
-                .take(8)
-                .find(|r| r.from == ch)
+            CHAR_REPLACEMENTS.iter().take(8).find(|r| r.from == ch)
         };
 
         let Some(rep) = rep else {
@@ -321,30 +318,30 @@ pub fn render_scheme(
                 .next()
                 .ok_or_else(|| "Invalid scheme syntax, no terminating \"#\"!".to_string())?;
 
-            let (val1, val1_from_tag) = if let Some(v) = get_tag_value(ctx, meta, output_format, val1_key)
-            {
-                (v, true)
-            } else {
-                (val1_key.to_string(), false)
-            };
-            let (val2, val2_from_tag) = if let Some(v) = get_tag_value(ctx, meta, output_format, val2_key)
-            {
-                (v, true)
-            } else {
-                (val2_key.to_string(), false)
-            };
+            let (val1, val1_from_tag) =
+                if let Some(v) = get_tag_value(ctx, meta, output_format, val1_key) {
+                    (v, true)
+                } else {
+                    (val1_key.to_string(), false)
+                };
+            let (val2, val2_from_tag) =
+                if let Some(v) = get_tag_value(ctx, meta, output_format, val2_key) {
+                    (v, true)
+                } else {
+                    (val2_key.to_string(), false)
+                };
 
             if eval_cond(&val1, op, &val2, val1_from_tag, val2_from_tag)? {
                 for part in true_expr.split('|') {
                     if part.is_empty() {
                         continue;
                     }
-                    let (rendered, from_tag) = if let Some(v) = get_tag_value(ctx, meta, output_format, part)
-                    {
-                        (v, true)
-                    } else {
-                        (part.to_string(), false)
-                    };
+                    let (rendered, from_tag) =
+                        if let Some(v) = get_tag_value(ctx, meta, output_format, part) {
+                            (v, true)
+                        } else {
+                            (part.to_string(), false)
+                        };
                     out.push_str(&sanitize_text(ctx, &rendered, from_tag));
                 }
             }
@@ -553,7 +550,10 @@ mod tests {
     fn render_year_and_padded_track() {
         let ctx = mkctx(SanitizeMethod::Unicode, 12);
         let meta = map(&[("date", "1979-11-30"), ("track", "1")]);
-        assert_eq!(render_scheme(&ctx, &meta, "FLAC", "{year}").unwrap(), "1979");
+        assert_eq!(
+            render_scheme(&ctx, &meta, "FLAC", "{year}").unwrap(),
+            "1979"
+        );
         assert_eq!(render_scheme(&ctx, &meta, "FLAC", "{track}").unwrap(), "01");
     }
 
@@ -584,7 +584,11 @@ mod tests {
     #[test]
     fn builds_log_and_cue_paths_from_schemes() {
         let ctx = mkctx(SanitizeMethod::Unicode, 12);
-        let album = map(&[("album", "Example Album"), ("disc", "1"), ("totaldiscs", "2")]);
+        let album = map(&[
+            ("album", "Example Album"),
+            ("disc", "1"),
+            ("totaldiscs", "2"),
+        ]);
 
         let log_path = build_log_relative_path(
             &ctx,

@@ -1,15 +1,12 @@
+use crate::audio::ProcessedPcmTrackData;
 use std::fs::File;
 use std::io::{Cursor, Seek};
 use std::path::Path;
-use crate::audio::ProcessedPcmTrackData;
 
 #[derive(Debug)]
 pub enum WavWriteError {
     InvalidSpec(&'static str),
-    ChannelAlignment {
-        channels: u16,
-        sample_count: usize,
-    },
+    ChannelAlignment { channels: u16, sample_count: usize },
     Io(std::io::Error),
     Hound(hound::Error),
 }
@@ -86,10 +83,7 @@ fn validate_input(input: &ProcessedPcmTrackData) -> Result<(), WavWriteError> {
     Ok(())
 }
 
-fn write_to_writer<W>(
-    writer: W,
-    input: &ProcessedPcmTrackData,
-) -> Result<(), WavWriteError>
+fn write_to_writer<W>(writer: W, input: &ProcessedPcmTrackData) -> Result<(), WavWriteError>
 where
     W: std::io::Write + Seek,
 {
