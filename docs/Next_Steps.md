@@ -23,7 +23,11 @@ This list tracks remaining work to close migration milestones and release parity
 - Wire rip-time AccurateRip checksum generation/match reporting into run path.
 - Feed finish-summary parity lines from runtime match outcomes.
 
-5. M7 parity: EBU R128-based ReplayGain/R128 tag embedding
+5. M7 parity: MusicBrainz NotFound submission URL coverage
+- Ensure the TOC-based MusicBrainz submission URL is printed clearly when `musicbrainz_rs` lookup returns `NotFound`, both during full rip and info/cue-only modes.
+- Add differential or regression coverage confirming the link is present and matches upstream's `cdtoc/attach` URL form.
+
+6. M7 parity: EBU R128-based ReplayGain/R128 tag embedding
 - The per-track summary now computes EBU R128 integrated loudness, LRA, true peak, and sample peak and prints EBU R128-derived `REPLAYGAIN_TRACK_GAIN`, `R128_TRACK_GAIN`, `REPLAYGAIN_TRACK_RANGE`, `REPLAYGAIN_TRACK_PEAK`, and `REPLAYGAIN_REFERENCE_LOUDNESS` values.
 - Remaining: replace the current RMS-based ReplayGain tag values written into FLAC files with these EBU R128-derived values, and add album aggregation so `REPLAYGAIN_ALBUM_GAIN`/`PEAK` are also EBU R128-based.
 - Add regression tests that decode the emitted FLAC tags and assert the EBU R128-based values are present and consistent with the printed summary.

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use musicbrainz_rs::entity::artist_credit::ArtistCredit;
-use musicbrainz_rs::entity::discid::Discid;
 use musicbrainz_rs::entity::release::{Media, Release, ReleasePackaging, ReleaseStatus, Track};
+use serde::Deserialize;
 use std::time::Duration;
 
 use crate::ReleaseSelection;
@@ -171,7 +171,14 @@ impl<H: MusicBrainzHttpClient> MusicBrainzService<H> {
 		);
 
 		let body = self.http.get(&url, &self.user_agent).await?;
-		let disc: Discid =
+		// Use a minimal, MusicBrainz-response-tolerant wrapper instead of the
+		// musicbrainz_rs Discid struct, which can fail on field-name mismatches
+		// such as `offset-count` in some API responses.
+		#[derive(Debug, Deserialize)]
+		struct DiscidResponse {
+			releases: Option<Vec<Release>>,
+		}
+		let disc: DiscidResponse =
 			serde_json::from_str(&body).map_err(|e| MusicBrainzError::Parse(e.to_string()))?;
 
 		let releases = disc.releases.unwrap_or_default();

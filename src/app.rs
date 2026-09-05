@@ -548,6 +548,12 @@ fn eac_crc32_pcm(pcm: &PcmTrackData) -> u32 {
     all_checksums_from_pcm(pcm, false, false).eac_crc
 }
 
+#[allow(dead_code)]
+fn _silence_unused_checksum_helpers() {
+    let _ = accurip_v2_checksum_pcm as fn(&PcmTrackData, bool, bool) -> u32;
+    let _ = eac_crc32_pcm as fn(&PcmTrackData) -> u32;
+}
+
 #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
 fn track_accurip_confidence_for_pcm(
     track_number: u32,
@@ -632,8 +638,6 @@ struct TrackRipSummary {
 
 #[derive(Debug)]
 struct PendingTrackSummary {
-    track_number: u32,
-    plan: TrackReadPlan,
     track_meta: HashMap<String, String>,
     pre_summary: TrackRipSummary,
     handle: std::thread::JoinHandle<Result<TrackOutputFlowResult, String>>,
@@ -3075,11 +3079,19 @@ fn render_track_rip_summary(
             ));
             out.push_str(&format!("    Accurip v1:  {:08X}\n", summary.accurip_v1));
             out.push_str(&format!("    Accurip v2:  {:08X}\n", summary.accurip_v2));
+            out.push_str(&format!(
+                "    Accurip v1 (450):  {:08X}\n",
+                summary.accurip_v1_450
+            ));
         }
         AccurateRipTrackDbStatus::Mismatch => {
             out.push_str("  Accurip:       mismatch\n");
             out.push_str(&format!("    Accurip v1:  {:08X}\n", summary.accurip_v1));
             out.push_str(&format!("    Accurip v2:  {:08X}\n", summary.accurip_v2));
+            out.push_str(&format!(
+                "    Accurip v1 (450):  {:08X}\n",
+                summary.accurip_v1_450
+            ));
         }
         AccurateRipTrackDbStatus::Match { v1_confidence, v2_confidence } => {
             let max_conf = v1_confidence.max(v2_confidence);
@@ -3103,6 +3115,10 @@ fn render_track_rip_summary(
             } else {
                 out.push_str(&format!("    Accurip v2:  {:08X}\n", summary.accurip_v2));
             }
+            out.push_str(&format!(
+                "    Accurip v1 (450):  {:08X}\n",
+                summary.accurip_v1_450
+            ));
         }
     }
 
@@ -3178,10 +3194,6 @@ fn render_track_rip_summary(
 fn format_eta_min_sec(eta_min: f64) -> String {
     let total_secs = (eta_min.max(0.0) * 60.0).round() as u64;
     format!("{}:{:02}", total_secs / 60, total_secs % 60)
-}
-
-fn samples_from_frames(frame_count: usize) -> usize {
-    frame_count.saturating_mul(588)
 }
 
 fn parse_usize_meta(map: &HashMap<String, String>, key: &str) -> Option<usize> {
@@ -3956,8 +3968,6 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
             .map_err(|e| format!("full-rip writer flow failed: {e}"))
         });
         pending_summaries.push(PendingTrackSummary {
-            track_number: boundary.track_number,
-            plan: boundary.clone(),
             track_meta,
             pre_summary,
             handle,
@@ -4302,6 +4312,12 @@ where
                             .to_string(),
                     );
                     musicbrainz_release_choices = Some(candidates);
+                }
+                Err(MusicBrainzError::NotFound) => {
+                    warnings.push(format!(
+                        "musicbrainz lookup failed: disc not present in the MusicBrainz database. To submit this disc, visit: {}",
+                        d.mb_submission_url
+                    ));
                 }
                 Err(e) => warnings.push(format!("musicbrainz lookup failed: {e:?}")),
             }

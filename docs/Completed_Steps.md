@@ -88,6 +88,7 @@ Key files:
 Coverage notes:
 - Added deterministic vector tests for DiscID/CDDB/TOC output and invalid-input behavior.
 - Added wiremock-backed fixture tests for release lookup, selection behavior, not-found handling, and track metadata mapping.
+- MusicBrainz NotFound path now emits the TOC-based submission URL (`mb_submission_url`) alongside the lookup failure warning in `orchestrate_metadata_flow`, matching upstream's behavior of presenting a `cdtoc/attach` link when no release exists.
 - Added wiremock-backed cover art tests for DB lookup policy, URL hydration, and C-compatible front/back selection behavior.
 - Added deterministic AccurateRip fixture-blob parser tests and wiremock lookup tests (404, html-not-found heuristic, valid binary payload).
 
