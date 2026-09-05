@@ -142,6 +142,24 @@ pub struct CliArgs {
     pub no_replaygain: bool,
 
     #[arg(
+        long = "no-loudness",
+        visible_alias = "no_loudness",
+        default_value_t = false,
+        help_heading = "Ripping options",
+        help = "Disable EBU R128 loudness analysis"
+    )]
+    pub no_loudness: bool,
+
+    #[arg(
+        long = "no-checksums",
+        visible_alias = "no_checksums",
+        default_value_t = false,
+        help_heading = "Ripping options",
+        help = "Disable EAC CRC32 and AccurateRip checksum computation"
+    )]
+    pub no_checksums: bool,
+
+    #[arg(
         short = 'o',
         long = "outputs",
         help_heading = "Output options",
@@ -389,6 +407,8 @@ impl CliArgs {
         settings.force_deemphasis = self.force_deemphasis;
         settings.deemphasis = !self.no_deemphasis;
         settings.enable_replaygain = !self.no_replaygain;
+        settings.disable_loudness = self.no_loudness;
+        settings.disable_checksums = self.no_checksums;
         settings.disable_mb = self.no_musicbrainz;
         settings.disable_accurip = self.no_accurip;
         settings.disable_coverart_db = self.no_coverart_db;

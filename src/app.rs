@@ -152,7 +152,15 @@ fn render_info_only_report(settings: &Settings, drive_used: Option<&str>) -> Str
     ));
     lines.push(format!(
         "AccurateRip:    {}",
-        if settings.disable_accurip { "disabled" } else { "enabled" }
+        if settings.disable_accurip || settings.disable_checksums { "disabled" } else { "enabled" }
+    ));
+    lines.push(format!(
+        "Checksums:      {}",
+        if settings.disable_checksums { "disabled" } else { "enabled" }
+    ));
+    lines.push(format!(
+        "Loudness:       {}",
+        if settings.disable_loudness { "disabled" } else { "enabled" }
     ));
     lines.join("\n")
 }
@@ -536,6 +544,16 @@ fn all_checksums_from_pcm(pcm: &PcmTrackData, is_first_track: bool, is_last_trac
     ctx.finalize()
 }
 
+/// Zero-initialized checksum result for use when checksum computation is disabled.
+fn disabled_checksum_result() -> crate::fun512::ChecksumResult {
+    crate::fun512::ChecksumResult {
+        eac_crc: 0,
+        accurip_checksum_v1: 0,
+        accurip_checksum_v1_450: 0,
+        accurip_checksum_v2: 0,
+    }
+}
+
 fn accurip_v1_checksum_pcm(pcm: &PcmTrackData, is_first_track: bool, is_last_track: bool) -> u32 {
     all_checksums_from_pcm(pcm, is_first_track, is_last_track).accurip_checksum_v1
 }
@@ -667,11 +685,21 @@ fn compute_track_rip_summary(
         .unwrap_or(0);
     let is_last_track = track_number as usize == total_tracks && total_tracks > 0;
 
-    let checksums = all_checksums_from_pcm(pcm, is_first_track, is_last_track);
-    let loudness = measure_loudness(pcm);
+    let checksums = if settings.disable_checksums {
+        disabled_checksum_result()
+    } else {
+        all_checksums_from_pcm(pcm, is_first_track, is_last_track)
+    };
+    let loudness = if settings.disable_loudness {
+        None
+    } else {
+        measure_loudness(pcm)
+    };
 
     let mut accurip_db_status = AccurateRipTrackDbStatus::NotFound;
-    if metadata_flow.map(|m| m.accurip_status) == Some(AccuDbStatus::Disabled) {
+    if settings.disable_checksums {
+        accurip_db_status = AccurateRipTrackDbStatus::Disabled;
+    } else if metadata_flow.map(|m| m.accurip_status) == Some(AccuDbStatus::Disabled) {
         accurip_db_status = AccurateRipTrackDbStatus::Disabled;
     } else if metadata_flow.map(|m| m.accurip_status) == Some(AccuDbStatus::Found) {
         if let Some(ar) = metadata_flow.and_then(|m| m.accurip.as_ref()) {
@@ -3063,7 +3091,11 @@ fn render_track_rip_summary(
         ));
     }
 
-    out.push_str(&format!("\n  EAC CRC32:     {:08X}\n", summary.eac_crc));
+    if summary.eac_crc != 0 || summary.accurip_v1 != 0 || summary.accurip_v2 != 0 {
+        out.push_str(&format!("\n  EAC CRC32:     {:08X}\n", summary.eac_crc));
+    } else {
+        out.push_str("\n  EAC CRC32:     disabled\n");
+    }
 
     match summary.accurip_db_status {
         AccurateRipTrackDbStatus::Disabled => {
@@ -3874,15 +3906,19 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
 
             #[cfg(all(target_os = "linux", feature = "cdda", feature = "backend-libcdio-sys"))]
             {
-                let conf = acquired
-                    .accurip_confidence_from_paranoia_frames
-                    .or_else(|| {
-                        track_accurip_confidence_for_pcm(
-                            boundary.track_number,
-                            &acquired.pcm,
-                            metadata_flow.as_ref(),
-                        )
-                    });
+                let conf = if settings.disable_checksums {
+                    None
+                } else {
+                    acquired
+                        .accurip_confidence_from_paranoia_frames
+                        .or_else(|| {
+                            track_accurip_confidence_for_pcm(
+                                boundary.track_number,
+                                &acquired.pcm,
+                                metadata_flow.as_ref(),
+                            )
+                        })
+                };
                 match conf {
                     Some(v) if v > 0 => println!(
                         "AccurateRip               : verified for track {} on attempt {} with confidence {}.",
