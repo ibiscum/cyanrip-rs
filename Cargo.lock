@@ -78,9 +78,9 @@ dependencies = [
 
 [[package]]
 name = "api_bindium"
-version = "0.4.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fd2b5604962dee5b3caed7623897b48afd64b47d008b0eec813473e34532cce"
+checksum = "2d28b22ed194e1de54affed045d516e2f56f6fa98cdac21bd6f1abee0ed9b41e"
 dependencies = [
  "bon",
  "serde_core",
@@ -1255,9 +1255,9 @@ dependencies = [
 
 [[package]]
 name = "musicbrainz_rs"
-version = "0.13.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c55646251398a2ba9c016bc6c7453e2759377eca24c81ca815d27e9da47fc981"
+checksum = "16dc884df7a9e0cbb9b020940cf73c45e4cc2700d86ffa4daac47237e1d5fac4"
 dependencies = [
  "api_bindium",
  "bon",
@@ -1265,6 +1265,7 @@ dependencies = [
  "glob",
  "lucene_query_builder",
  "serde",
+ "serde_json",
  "snafu",
 ]
 
@@ -1567,7 +1568,6 @@ version = "0.23.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
 dependencies = [
- "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -2115,13 +2115,10 @@ dependencies = [
  "flate2",
  "log",
  "percent-encoding",
- "rustls",
- "rustls-pki-types",
  "serde",
  "serde_json",
  "ureq-proto",
  "utf8-zero",
- "webpki-roots",
 ]
 
 [[package]]
