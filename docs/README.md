@@ -45,6 +45,7 @@ Documents:
 - [NO_REPLAYGAIN_OPTION_FLOW.md](no-replaygain_option_flow.md): purpose, FLAC ReplayGain tag gating behavior, and implementation status for `-K/--no-replaygain`.
 - [M6_REAL_HARDWARE_VALIDATION.md](M6_REAL_HARDWARE_VALIDATION.md): practical real-drive reliability scenarios and acceptance-notes template for M6 closure.
 - [M7_DIFFERENTIAL_HARNESS.md](M7_DIFFERENTIAL_HARNESS.md): first-slice differential testing against the C binary and M7 expansion steps.
+- [logging.md](logging.md): diagnostic logging facility (`log`/`env_logger`), `RUST_LOG` verbosity control, and the split between logged diagnostics and protocol-output console text.
 
 Primary planning references outside this folder:
 - [../MIGRATION_PLAN.md](../MIGRATION_PLAN.md)

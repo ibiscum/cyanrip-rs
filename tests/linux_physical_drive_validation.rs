@@ -1,8 +1,8 @@
 #![cfg(all(target_os = "linux", feature = "backend-libcdio-sys"))]
 
 use cyanrip_rs::cdda::linux_drive::{
-    open_linux_physical_drive, read_drive_hwinfo, read_drive_toc_tracks, run_paranoia_on_linux_drive,
-    run_paranoia_on_linux_drive_interruptible,
+    open_linux_physical_drive, read_drive_hwinfo, read_drive_toc_tracks,
+    run_paranoia_on_linux_drive, run_paranoia_on_linux_drive_interruptible,
 };
 use cyanrip_rs::cdda::paranoia::{RetryPolicy, RipEvent, RipState};
 use cyanrip_rs::cdda::reader::CddaFrameReader;
@@ -19,8 +19,7 @@ fn reads_audio_cd_toc_from_real_drive() {
     let device = std::env::var("CYANRIP_CDROM_DEVICE").unwrap_or_else(|_| "/dev/cdrom".to_string());
     let c_device = CString::new(device.clone()).expect("device path must not contain NUL bytes");
 
-    let drive: *mut CdIo_t =
-        unsafe { cdio_open(c_device.as_ptr(), driver_id_t_DRIVER_UNKNOWN) };
+    let drive: *mut CdIo_t = unsafe { cdio_open(c_device.as_ptr(), driver_id_t_DRIVER_UNKNOWN) };
     assert!(
         !drive.is_null(),
         "failed to open {device}; ensure an audio CD is inserted beforehand"
@@ -41,9 +40,8 @@ fn reads_audio_cd_toc_from_real_drive() {
         );
     }
 
-    let leadout_lsn = unsafe {
-        cdio_get_track_lsn(drive, cdio_track_enums_CDIO_CDROM_LEADOUT_TRACK as u8)
-    };
+    let leadout_lsn =
+        unsafe { cdio_get_track_lsn(drive, cdio_track_enums_CDIO_CDROM_LEADOUT_TRACK as u8) };
     assert_ne!(
         leadout_lsn, CDIO_INVALID_LSN,
         "invalid TOC leadout LSN on {device}"
@@ -96,7 +94,9 @@ fn reads_one_audio_frame_from_real_drive() {
         panic!("failed to open drive at {device}: {err:?}");
     });
 
-    reader.seek_frame(0).expect("seek to first frame should work");
+    reader
+        .seek_frame(0)
+        .expect("seek to first frame should work");
     let frame = reader
         .read_frame()
         .expect("first frame read should work on a readable audio disc");
@@ -110,22 +110,15 @@ fn runs_paranoia_pipeline_on_real_drive() {
     let device = std::env::var("CYANRIP_CDROM_DEVICE").unwrap_or_else(|_| "/dev/cdrom".to_string());
     let mut policy = RetryPolicy::disabled();
 
-    let out = run_paranoia_on_linux_drive(
-        Some(&device),
-        0,
-        1,
-        1,
-        &mut policy,
-        |_pass, frames| {
-            let mut acc = 0u32;
-            for frame in frames {
-                for b in frame {
-                    acc = acc.wrapping_add(*b as u32);
-                }
+    let out = run_paranoia_on_linux_drive(Some(&device), 0, 1, 1, &mut policy, |_pass, frames| {
+        let mut acc = 0u32;
+        for frame in frames {
+            for b in frame {
+                acc = acc.wrapping_add(*b as u32);
             }
-            acc
-        },
-    )
+        }
+        acc
+    })
     .expect("paranoia run should complete on readable media");
 
     match out.state {
@@ -200,10 +193,7 @@ fn manual_media_change_scenario_reference() {
         }
 
         if i % 10 == 0 {
-            eprintln!(
-                "waiting for manual media change... {}s elapsed",
-                (i / 4)
-            );
+            eprintln!("waiting for manual media change... {}s elapsed", (i / 4));
         }
 
         std::thread::sleep(std::time::Duration::from_millis(250));
@@ -217,8 +207,8 @@ fn manual_media_change_scenario_reference() {
 #[test]
 #[ignore = "requires a real optical drive and an audio CD inserted beforehand"]
 fn info_mode_report_contains_toc_section_with_track_details() {
-    use cyanrip_rs::{OutputFormat, Settings};
     use cyanrip_rs::app::run_workflow;
+    use cyanrip_rs::{OutputFormat, Settings};
 
     let device = std::env::var("CYANRIP_CDROM_DEVICE").unwrap_or_else(|_| "/dev/cdrom".to_string());
 
@@ -364,7 +354,10 @@ fn full_rip_requires_release_selection_when_musicbrainz_returns_multiple_release
         "expected release-selection guidance; output:\n{msg}"
     );
     assert!(
-        !output_root.exists() || std::fs::read_dir(&output_root).map(|mut d| d.next().is_none()).unwrap_or(true),
+        !output_root.exists()
+            || std::fs::read_dir(&output_root)
+                .map(|mut d| d.next().is_none())
+                .unwrap_or(true),
         "no rip output should have been written before release disambiguation; found files under {}",
         output_root.display()
     );
@@ -385,8 +378,10 @@ fn full_rip_track_one_completes_with_drive_offset_correction() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
-    let output_root =
-        std::env::temp_dir().join(format!("cyanrip-rs-offset-lock-test-{}", std::process::id()));
+    let output_root = std::env::temp_dir().join(format!(
+        "cyanrip-rs-offset-lock-test-{}",
+        std::process::id()
+    ));
 
     let settings = Settings {
         dev_path: Some(device),

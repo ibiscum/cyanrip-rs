@@ -123,8 +123,8 @@ impl RetryPolicy {
 
         self.prior_checksums.push(checksum);
 
-        let last_chance = (matches + 1) >= self.required_matches
-            || (self.total_attempts + 1) >= self.max_retries;
+        let last_chance =
+            (matches + 1) >= self.required_matches || (self.total_attempts + 1) >= self.max_retries;
         if last_chance {
             RetryDecision::RetryAndStartEncoding
         } else {

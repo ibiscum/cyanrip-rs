@@ -5,6 +5,79 @@ use super::reader::{
     run_track_with_paranoia_heuristics_interruptible,
 };
 
+/// Opens a single native libcdio-paranoia session reader to be reused across
+/// all tracks in a physical full-rip session, matching upstream's single
+/// `ctx->paranoia` lifetime.
+#[cfg(feature = "backend-libcdio-sys")]
+pub fn open_native_paranoia_reader(
+    device_path: Option<&str>,
+    paranoia_level: i32,
+    max_frame_retries: u32,
+) -> Result<NativeParanoiaFrameReader, CddaReadError> {
+    let mode = super::paranoia::paranoia_mode_from_level(paranoia_level)
+        .map_err(CddaReadError::ReadFailed)?;
+    NativeParanoiaFrameReader::open(device_path, mode, max_frame_retries)
+}
+
+#[cfg(not(feature = "backend-libcdio-sys"))]
+pub fn open_native_paranoia_reader(
+    _device_path: Option<&str>,
+    _paranoia_level: i32,
+    _max_frame_retries: u32,
+) -> Result<NativeParanoiaFrameReader, CddaReadError> {
+    Err(CddaReadError::ReadFailed(
+        "native paranoia backend requires backend-libcdio-sys".to_string(),
+    ))
+}
+
+/// Runs one track through an already-open native paranoia reader. The caller
+/// retains ownership of the reader and reuses it for subsequent tracks.
+#[cfg(feature = "backend-libcdio-sys")]
+pub fn run_with_native_paranoia_reader<F, P>(
+    reader: &mut NativeParanoiaFrameReader,
+    start_lsn: i32,
+    frame_count: usize,
+    max_frame_retries: u32,
+    retry_policy: &mut RetryPolicy,
+    checksum_fn: F,
+    on_frame_progress: P,
+) -> Result<ParanoiaTrackRunResult, CddaReadError>
+where
+    F: FnMut(u32, &[Vec<u8>]) -> u32,
+    P: FnMut(usize, usize),
+{
+    run_track_with_paranoia_heuristics_interruptible(
+        reader,
+        start_lsn,
+        frame_count,
+        max_frame_retries,
+        retry_policy,
+        ParanoiaHeuristicConfig::default(),
+        || false,
+        checksum_fn,
+        on_frame_progress,
+    )
+}
+
+#[cfg(not(feature = "backend-libcdio-sys"))]
+pub fn run_with_native_paranoia_reader<F, P>(
+    _reader: &mut NativeParanoiaFrameReader,
+    _start_lsn: i32,
+    _frame_count: usize,
+    _max_frame_retries: u32,
+    _retry_policy: &mut RetryPolicy,
+    _checksum_fn: F,
+    _on_frame_progress: P,
+) -> Result<ParanoiaTrackRunResult, CddaReadError>
+where
+    F: FnMut(u32, &[Vec<u8>]) -> u32,
+    P: FnMut(usize, usize),
+{
+    Err(CddaReadError::ReadFailed(
+        "native paranoia backend requires backend-libcdio-sys".to_string(),
+    ))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DriveTrackTocEntry {
     pub number: u8,
@@ -148,9 +221,13 @@ impl LinuxDriveBackend for LibcdioSysBackend {
             let c_path = std::ffi::CString::new(path).map_err(|_| {
                 CddaReadError::ReadFailed("device path contains interior NUL byte".to_string())
             })?;
-            unsafe { libcdio_sys::cdio_open(c_path.as_ptr(), libcdio_sys::driver_id_t_DRIVER_UNKNOWN) }
+            unsafe {
+                libcdio_sys::cdio_open(c_path.as_ptr(), libcdio_sys::driver_id_t_DRIVER_UNKNOWN)
+            }
         } else {
-            unsafe { libcdio_sys::cdio_open(std::ptr::null(), libcdio_sys::driver_id_t_DRIVER_UNKNOWN) }
+            unsafe {
+                libcdio_sys::cdio_open(std::ptr::null(), libcdio_sys::driver_id_t_DRIVER_UNKNOWN)
+            }
         };
 
         if ptr.is_null() {
@@ -214,7 +291,9 @@ pub fn open_linux_physical_drive(
 }
 
 #[cfg(feature = "backend-libcdio-sys")]
-pub fn read_drive_toc_tracks(device_path: Option<&str>) -> Result<Vec<DriveTrackTocEntry>, CddaReadError> {
+pub fn read_drive_toc_tracks(
+    device_path: Option<&str>,
+) -> Result<Vec<DriveTrackTocEntry>, CddaReadError> {
     let ptr = if let Some(path) = device_path {
         let c_path = std::ffi::CString::new(path).map_err(|_| {
             CddaReadError::ReadFailed("device path contains interior NUL byte".to_string())
@@ -256,7 +335,8 @@ pub fn read_drive_toc_tracks(device_path: Option<&str>) -> Result<Vec<DriveTrack
             }
 
             let next_start = if i + 1 < count {
-                let next = unsafe { libcdio_sys::cdio_get_track_lsn(ptr, (track_number + 1) as u8) } as i32;
+                let next = unsafe { libcdio_sys::cdio_get_track_lsn(ptr, (track_number + 1) as u8) }
+                    as i32;
                 if next == libcdio_sys::CDIO_INVALID_LSN || next <= start {
                     return Err(CddaReadError::ReadFailed(format!(
                         "invalid next-track LSN for track {track_number}"
@@ -279,13 +359,14 @@ pub fn read_drive_toc_tracks(device_path: Option<&str>) -> Result<Vec<DriveTrack
                 x if x == libcdio_sys::track_format_t_TRACK_FORMAT_XA => true,
                 x if x == libcdio_sys::track_format_t_TRACK_FORMAT_DATA => true,
                 x if x == libcdio_sys::track_format_t_TRACK_FORMAT_PSX => true,
-                x if x == libcdio_sys::track_format_t_TRACK_FORMAT_ERROR => {
-                    unsafe { libcdio_sys::cdio_get_track_green(ptr, track_number) }
-                }
+                x if x == libcdio_sys::track_format_t_TRACK_FORMAT_ERROR => unsafe {
+                    libcdio_sys::cdio_get_track_green(ptr, track_number)
+                },
                 _ => false,
             };
 
-            let raw_pregap = unsafe { libcdio_sys::cdio_get_track_pregap_lsn(ptr, track_number) } as i32;
+            let raw_pregap =
+                unsafe { libcdio_sys::cdio_get_track_pregap_lsn(ptr, track_number) } as i32;
             let pregap_lsn = if raw_pregap == libcdio_sys::CDIO_INVALID_LSN || raw_pregap == start {
                 None
             } else {
@@ -310,7 +391,9 @@ pub fn read_drive_toc_tracks(device_path: Option<&str>) -> Result<Vec<DriveTrack
 }
 
 #[cfg(not(feature = "backend-libcdio-sys"))]
-pub fn read_drive_toc_tracks(_device_path: Option<&str>) -> Result<Vec<DriveTrackTocEntry>, CddaReadError> {
+pub fn read_drive_toc_tracks(
+    _device_path: Option<&str>,
+) -> Result<Vec<DriveTrackTocEntry>, CddaReadError> {
     Err(CddaReadError::ReadFailed(
         "drive TOC access requires backend-libcdio-sys".to_string(),
     ))
@@ -338,7 +421,11 @@ pub fn read_drive_hwinfo(device_path: Option<&str>) -> Option<DriveHwInfo> {
         return None;
     }
     let to_str = |arr: &[i8]| -> String {
-        let bytes: Vec<u8> = arr.iter().take_while(|&&b| b != 0).map(|&b| b as u8).collect();
+        let bytes: Vec<u8> = arr
+            .iter()
+            .take_while(|&&b| b != 0)
+            .map(|&b| b as u8)
+            .collect();
         String::from_utf8_lossy(&bytes).trim().to_string()
     };
     Some(DriveHwInfo {
@@ -372,9 +459,7 @@ pub fn eject_linux_drive_if_supported(device_path: Option<&str>) -> bool {
     let mut read_cap: libcdio_sys::cdio_drive_read_cap_t = 0;
     let mut write_cap: libcdio_sys::cdio_drive_write_cap_t = 0;
     let mut misc_cap: libcdio_sys::cdio_drive_misc_cap_t = 0;
-    unsafe {
-        libcdio_sys::cdio_get_drive_cap(ptr, &mut read_cap, &mut write_cap, &mut misc_cap)
-    };
+    unsafe { libcdio_sys::cdio_get_drive_cap(ptr, &mut read_cap, &mut write_cap, &mut misc_cap) };
 
     let can_eject = (misc_cap & libcdio_sys::cdio_drive_cap_misc_t_CDIO_DRIVE_CAP_MISC_EJECT) != 0;
     if !can_eject {
@@ -444,11 +529,12 @@ where
         heuristics,
         || false,
         checksum_fn,
+        |_done, _total| {},
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn run_paranoia_on_linux_drive_with_backend_heuristics_interruptible<B, F, I>(
+pub fn run_paranoia_on_linux_drive_with_backend_heuristics_interruptible<B, F, I, P>(
     backend: B,
     device_path: Option<&str>,
     start_lsn: i32,
@@ -458,11 +544,13 @@ pub fn run_paranoia_on_linux_drive_with_backend_heuristics_interruptible<B, F, I
     heuristics: ParanoiaHeuristicConfig,
     should_interrupt: I,
     checksum_fn: F,
+    on_frame_progress: P,
 ) -> Result<ParanoiaTrackRunResult, CddaReadError>
 where
     B: LinuxDriveBackend,
     F: FnMut(u32, &[Vec<u8>]) -> u32,
     I: FnMut() -> bool,
+    P: FnMut(usize, usize),
 {
     let mut reader = LinuxPhysicalDriveReader::new(backend, device_path)?;
     run_track_with_paranoia_heuristics_interruptible(
@@ -474,6 +562,7 @@ where
         heuristics,
         should_interrupt,
         checksum_fn,
+        on_frame_progress,
     )
 }
 
@@ -496,10 +585,12 @@ where
         retry_policy,
         ParanoiaHeuristicConfig::default(),
         checksum_fn,
+        |_done, _total| {},
     )
 }
 
-pub fn run_paranoia_on_linux_drive_heuristics<F>(
+#[allow(clippy::too_many_arguments)]
+pub fn run_paranoia_on_linux_drive_heuristics<F, P>(
     device_path: Option<&str>,
     start_lsn: i32,
     frame_count: usize,
@@ -507,9 +598,11 @@ pub fn run_paranoia_on_linux_drive_heuristics<F>(
     retry_policy: &mut RetryPolicy,
     heuristics: ParanoiaHeuristicConfig,
     checksum_fn: F,
+    on_frame_progress: P,
 ) -> Result<ParanoiaTrackRunResult, CddaReadError>
 where
     F: FnMut(u32, &[Vec<u8>]) -> u32,
+    P: FnMut(usize, usize),
 {
     run_paranoia_on_linux_drive_with_backend_heuristics_interruptible(
         DefaultLinuxDriveBackend::default(),
@@ -521,6 +614,7 @@ where
         heuristics,
         || false,
         checksum_fn,
+        on_frame_progress,
     )
 }
 
@@ -547,10 +641,11 @@ where
         ParanoiaHeuristicConfig::default(),
         should_interrupt,
         checksum_fn,
+        |_done, _total| {},
     )
 }
 
-pub fn run_paranoia_on_linux_drive_with_defaults_for_level<F>(
+pub fn run_paranoia_on_linux_drive_with_defaults_for_level<F, P>(
     device_path: Option<&str>,
     paranoia_level: i32,
     start_lsn: i32,
@@ -558,9 +653,11 @@ pub fn run_paranoia_on_linux_drive_with_defaults_for_level<F>(
     max_frame_retries: u32,
     retry_policy: &mut RetryPolicy,
     checksum_fn: F,
+    on_frame_progress: P,
 ) -> Result<ParanoiaTrackRunResult, CddaReadError>
 where
     F: FnMut(u32, &[Vec<u8>]) -> u32,
+    P: FnMut(usize, usize),
 {
     // Prefer the real libcdio paranoia engine whenever it's compiled in; the
     // software-heuristic path below only exists for builds without it.
@@ -574,6 +671,7 @@ where
             max_frame_retries,
             retry_policy,
             checksum_fn,
+            on_frame_progress,
         );
     }
 
@@ -589,6 +687,7 @@ where
             retry_policy,
             heuristics,
             checksum_fn,
+            on_frame_progress,
         )
     }
 }
@@ -766,7 +865,10 @@ impl CddaFrameReader for NativeParanoiaFrameReader {
     fn media_changed(&self) -> bool {
         let p_cdio = unsafe { (*self.drive).p_cdio };
         let code = unsafe { libcdio_sys::cdio_get_media_changed(p_cdio) };
-        media_changed_from_code(code as i32, libcdio_sys::driver_return_code_t_DRIVER_OP_UNSUPPORTED)
+        media_changed_from_code(
+            code as i32,
+            libcdio_sys::driver_return_code_t_DRIVER_OP_UNSUPPORTED,
+        )
     }
 
     fn take_native_callback_counts(&mut self) -> Option<ParanoiaCallbackCounters> {
@@ -777,7 +879,7 @@ impl CddaFrameReader for NativeParanoiaFrameReader {
 /// Runs a track through the real libcdio paranoia engine, wrapped in the same
 /// repeat-rip outer state machine used for the software-heuristic path.
 #[cfg(feature = "backend-libcdio-sys")]
-pub fn run_paranoia_on_linux_drive_native_for_level<F>(
+pub fn run_paranoia_on_linux_drive_native_for_level<F, P>(
     device_path: Option<&str>,
     paranoia_level: i32,
     start_lsn: i32,
@@ -785,27 +887,26 @@ pub fn run_paranoia_on_linux_drive_native_for_level<F>(
     max_frame_retries: u32,
     retry_policy: &mut RetryPolicy,
     checksum_fn: F,
+    on_frame_progress: P,
 ) -> Result<ParanoiaTrackRunResult, CddaReadError>
 where
     F: FnMut(u32, &[Vec<u8>]) -> u32,
+    P: FnMut(usize, usize),
 {
-    let mode = super::paranoia::paranoia_mode_from_level(paranoia_level)
-        .map_err(CddaReadError::ReadFailed)?;
-    let mut reader = NativeParanoiaFrameReader::open(device_path, mode, max_frame_retries)?;
-    run_track_with_paranoia_heuristics_interruptible(
+    let mut reader = open_native_paranoia_reader(device_path, paranoia_level, max_frame_retries)?;
+    run_with_native_paranoia_reader(
         &mut reader,
         start_lsn,
         frame_count,
         max_frame_retries,
         retry_policy,
-        ParanoiaHeuristicConfig::default(),
-        || false,
         checksum_fn,
+        on_frame_progress,
     )
 }
 
 #[cfg(not(feature = "backend-libcdio-sys"))]
-pub fn run_paranoia_on_linux_drive_native_for_level<F>(
+pub fn run_paranoia_on_linux_drive_native_for_level<F, P>(
     _device_path: Option<&str>,
     _paranoia_level: i32,
     _start_lsn: i32,
@@ -813,9 +914,11 @@ pub fn run_paranoia_on_linux_drive_native_for_level<F>(
     _max_frame_retries: u32,
     _retry_policy: &mut RetryPolicy,
     _checksum_fn: F,
+    _on_frame_progress: P,
 ) -> Result<ParanoiaTrackRunResult, CddaReadError>
 where
     F: FnMut(u32, &[Vec<u8>]) -> u32,
+    P: FnMut(usize, usize),
 {
     Err(CddaReadError::ReadFailed(
         "native paranoia backend requires backend-libcdio-sys".to_string(),
@@ -892,7 +995,9 @@ mod tests {
                 )));
             }
             if self.fail_lsns.contains(&lsn) {
-                return Err(CddaReadError::ReadFailed(format!("mock read fail at {lsn}")));
+                return Err(CddaReadError::ReadFailed(format!(
+                    "mock read fail at {lsn}"
+                )));
             }
             let frame = self
                 .frames
@@ -965,8 +1070,7 @@ mod tests {
         let (mut backend, _state) = MockBackend::new();
         backend.media_changed_code = 5;
 
-        let reader =
-            LinuxPhysicalDriveReader::new(backend, Some("/dev/cdrom")).expect("mock open");
+        let reader = LinuxPhysicalDriveReader::new(backend, Some("/dev/cdrom")).expect("mock open");
         assert!(reader.media_changed());
     }
 
@@ -1030,7 +1134,10 @@ mod tests {
 
     #[test]
     fn level_based_defaults_enable_verify_overlap_for_higher_levels() {
-        assert_eq!(heuristics_for_paranoia_level(0), ParanoiaHeuristicConfig::default());
+        assert_eq!(
+            heuristics_for_paranoia_level(0),
+            ParanoiaHeuristicConfig::default()
+        );
         assert_eq!(
             heuristics_for_paranoia_level(1),
             ParanoiaHeuristicConfig::default()
@@ -1059,8 +1166,7 @@ mod tests {
         )
         .expect("run should complete");
         assert!(
-            out
-                .callback_counters
+            out.callback_counters
                 .get(crate::cdda::reader::ParanoiaCallbackKind::Verify)
                 >= 1
         );
@@ -1087,6 +1193,7 @@ mod tests {
                 checks >= 2
             },
             |_pass, _| 0,
+            |_done, _total| {},
         )
         .expect("interrupt should abort run");
 

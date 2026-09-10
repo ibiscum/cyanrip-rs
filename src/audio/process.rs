@@ -128,7 +128,9 @@ fn apply_hdcd_ffmpeg(input: &PcmTrackData) -> Result<ProcessedPcmTrackData, Trac
         .spawn()
         .map_err(|err| {
             if err.kind() == std::io::ErrorKind::NotFound {
-                TrackProcessingError::BackendUnavailable("ffmpeg executable not found in PATH".to_string())
+                TrackProcessingError::BackendUnavailable(
+                    "ffmpeg executable not found in PATH".to_string(),
+                )
             } else {
                 TrackProcessingError::BackendFailure(format!("failed to spawn ffmpeg: {err}"))
             }
@@ -136,7 +138,9 @@ fn apply_hdcd_ffmpeg(input: &PcmTrackData) -> Result<ProcessedPcmTrackData, Trac
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(&raw_input).map_err(|err| {
-            TrackProcessingError::BackendFailure(format!("failed writing PCM to ffmpeg stdin: {err}"))
+            TrackProcessingError::BackendFailure(format!(
+                "failed writing PCM to ffmpeg stdin: {err}"
+            ))
         })?;
     }
 
@@ -190,7 +194,9 @@ fn apply_hdcd_ffmpeg(input: &PcmTrackData) -> Result<ProcessedPcmTrackData, Trac
     })
 }
 
-fn apply_cd_deemphasis(input: &PcmTrackData) -> Result<ProcessedPcmTrackData, TrackProcessingError> {
+fn apply_cd_deemphasis(
+    input: &PcmTrackData,
+) -> Result<ProcessedPcmTrackData, TrackProcessingError> {
     if input.spec.channels == 0 {
         return Err(TrackProcessingError::InvalidSpec("channels must be > 0"));
     }
@@ -365,7 +371,10 @@ mod tests {
             track_has_preemphasis: false,
         };
 
-        assert_eq!(options.selected_processing_path(), ProcessingPath::Deemphasis);
+        assert_eq!(
+            options.selected_processing_path(),
+            ProcessingPath::Deemphasis
+        );
     }
 
     #[test]

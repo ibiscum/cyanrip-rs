@@ -37,7 +37,8 @@ fn classify_rust(out: &str) -> OffsetOutcome {
     {
         return OffsetOutcome::NoAr;
     }
-    if out.contains("Status: no track was long enough") || out.contains("No track was long enough") {
+    if out.contains("Status: no track was long enough") || out.contains("No track was long enough")
+    {
         return OffsetOutcome::TooShort;
     }
     if out.contains("Status: unable to find drive offset")
@@ -84,8 +85,7 @@ fn differential_find_offset_against_c_binary() {
     let c_state = classify_c(&c_out);
 
     assert_eq!(
-        rust_state,
-        c_state,
+        rust_state, c_state,
         "find-offset differential outcome mismatch\nRUST:\n{rust_out}\n\nC:\n{c_out}"
     );
 }

@@ -1,0 +1,103 @@
+cyanrip 0.9.3 (release)
+System device:  /dev/cdrom
+Device model:   HL-DT-ST DVDRAM GT33N     LT23 SCSI CD-ROM
+Offset:         +103 samples
+Overread:       +1 frame
+Overread mode:  fill with silence in lead-in/lead-out
+Speed:          default (unchangeable)
+C2 errors:      unsupported by drive
+Paranoia level: max
+Frame retries:  10
+HDCD decoding:  disabled
+Album Art:      none
+Outputs:        flac
+Disc tracks:    8
+Tracks to rip:  2
+DiscID:         Dnz5WGbLmNzXSoyEMT0Qc904wz8-
+CDDB ID:        5409F608
+Disc MCN:       7567922350208
+Album:          Unknown disc (7567)
+AccurateRip:    found
+Total time:     00:42:30.252
+
+Gaps:
+    None signalled
+
+Tracks:
+Track 2 ripped and encoded successfully!
+Summary:
+
+  Integrated loudness:
+    I:          -9.1 LUFS
+    Threshold: -19.1 LUFS
+
+  Loudness range:
+    LRA:         2.3 LU
+    Threshold: -29.1 LUFS
+    LRA low:   -10.4 LUFS
+    LRA high:   -8.1 LUFS
+
+  True peak:
+    Peak:        0.0 dBFS
+
+  Preemphasis:   none detected
+
+  Properties:
+    Duration:    00:03:42.180
+    Samples:     9800196
+    Frames:      16667
+    Pregap LSN:  none
+    Start LSN:   31201
+    End LSN:     47867 (with offset: 47868)
+
+  EAC CRC32:     FA18D22F
+  Accurip:       disc found in database (max confidence: 2)
+    Accurip v1:  7B6E21ED
+    Accurip v2:  FDA8E18F (accurately ripped, confidence 2)
+
+  Metadata:
+    track:                         2
+    tracktotal:                    8
+    disc_mcn:                      7567922350208
+    discid:                        Dnz5WGbLmNzXSoyEMT0Qc904wz8-
+    cddb:                          5409F608
+    media_type:                    CD
+    comment:                       cyanrip 0.9.3
+    album:                         Unknown disc (7567)
+    title:                         Unknown track
+    isrc:                          DEAN61500719
+    creation_time:                 2026-09-05T10:39:42
+    REPLAYGAIN_TRACK_GAIN:         -8.94 dB
+    R128_TRACK_GAIN:               -1008
+    REPLAYGAIN_TRACK_RANGE:        2.27 dB
+    REPLAYGAIN_TRACK_PEAK:         1.001891
+    REPLAYGAIN_REFERENCE_LOUDNESS: -18.00 LUFS
+
+  File(s):
+    AB_C/2.flac
+
+Album Loudness Summary:
+
+  Integrated loudness:
+    I:          -9.1 LUFS
+    Threshold: -19.1 LUFS
+
+  Loudness range:
+    LRA:         2.3 LU
+    Threshold: -29.1 LUFS
+    LRA low:   -10.4 LUFS
+    LRA high:   -8.1 LUFS
+
+  True peak:
+    Peak:        0.0 dBFS
+
+Tracks ripped accurately: 1/8
+
+Paranoia status counts:
+  READ:          1346
+  VERIFY:        92
+  OVERLAP:       19
+
+Ripping errors: 0
+Ripping finished at 2026-09-05T10:42:07
+Log FUN512: plzFdxuGBlvcMRr_iD4Bjkg8Gj0XS_ldccNGdITmP43hZCLgIIpfagx0G3mF3Q0CFStk6GZZuRVGKlCdfZ65Nw

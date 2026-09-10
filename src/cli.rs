@@ -1,10 +1,9 @@
 use clap::{CommandFactory, Parser};
 
 use crate::{
-    MAX_PARANOIA_LEVEL, Settings, apply_pregap_entries,
-    calc_over_under_read_frames, parse_cover_size, parse_cover_specs, parse_disc, parse_outputs,
-    parse_paranoia, parse_release, parse_sanitize, parse_track_indices, validate_folder_scheme,
-    validate_mode_combo,
+    MAX_PARANOIA_LEVEL, Settings, apply_pregap_entries, calc_over_under_read_frames,
+    parse_cover_size, parse_cover_specs, parse_disc, parse_outputs, parse_paranoia, parse_release,
+    parse_sanitize, parse_track_indices, validate_folder_scheme, validate_mode_combo,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +141,24 @@ pub struct CliArgs {
     pub no_replaygain: bool,
 
     #[arg(
+        long = "no-loudness",
+        visible_alias = "no_loudness",
+        default_value_t = false,
+        help_heading = "Ripping options",
+        help = "Disable EBU R128 loudness analysis"
+    )]
+    pub no_loudness: bool,
+
+    #[arg(
+        long = "no-checksums",
+        visible_alias = "no_checksums",
+        default_value_t = false,
+        help_heading = "Ripping options",
+        help = "Disable EAC CRC32 and AccurateRip checksum computation"
+    )]
+    pub no_checksums: bool,
+
+    #[arg(
         short = 'o',
         long = "outputs",
         help_heading = "Output options",
@@ -171,9 +188,9 @@ pub struct CliArgs {
         short = 'D',
         long = "folder-scheme",
         visible_alias = "folder_scheme",
-        default_value = "{album}{if #releasecomment# > #0# (|releasecomment|)} [{format}]"
-        ,help_heading = "Output options"
-        ,help = "Directory naming scheme"
+        default_value = "{album}{if #releasecomment# > #0# (|releasecomment|)} [{format}]",
+        help_heading = "Output options",
+        help = "Directory naming scheme"
     )]
     pub folder_scheme: String,
 
@@ -181,9 +198,9 @@ pub struct CliArgs {
         short = 'F',
         long = "track-scheme",
         visible_alias = "track_scheme",
-        default_value = "{if #totaldiscs# > #1#|disc|.}{track} - {title}"
-        ,help_heading = "Output options"
-        ,help = "Track naming scheme"
+        default_value = "{if #totaldiscs# > #1#|disc|.}{track} - {title}",
+        help_heading = "Output options",
+        help = "Track naming scheme"
     )]
     pub track_scheme: String,
 
@@ -191,9 +208,9 @@ pub struct CliArgs {
         short = 'L',
         long = "log-scheme",
         visible_alias = "log_scheme",
-        default_value = "{album}{if #totaldiscs# > #1# CD|disc|}"
-        ,help_heading = "Output options"
-        ,help = "Log file name scheme"
+        default_value = "{album}{if #totaldiscs# > #1# CD|disc|}",
+        help_heading = "Output options",
+        help = "Log file name scheme"
     )]
     pub log_scheme: String,
 
@@ -201,9 +218,9 @@ pub struct CliArgs {
         short = 'M',
         long = "cue-scheme",
         visible_alias = "cue_scheme",
-        default_value = "{album}{if #totaldiscs# > #1# CD|disc|}"
-        ,help_heading = "Output options"
-        ,help = "CUE file name scheme"
+        default_value = "{album}{if #totaldiscs# > #1# CD|disc|}",
+        help_heading = "Output options",
+        help = "CUE file name scheme"
     )]
     pub cue_scheme: String,
 
@@ -389,6 +406,8 @@ impl CliArgs {
         settings.force_deemphasis = self.force_deemphasis;
         settings.deemphasis = !self.no_deemphasis;
         settings.enable_replaygain = !self.no_replaygain;
+        settings.disable_loudness = self.no_loudness;
+        settings.disable_checksums = self.no_checksums;
         settings.disable_mb = self.no_musicbrainz;
         settings.disable_accurip = self.no_accurip;
         settings.disable_coverart_db = self.no_coverart_db;
@@ -491,10 +510,7 @@ impl CliArgs {
 
         parse_cover_specs(&settings.cover_specs)?;
 
-        Ok(CliConfig {
-            settings,
-            action,
-        })
+        Ok(CliConfig { settings, action })
     }
 }
 
@@ -530,9 +546,7 @@ fn parse_csv(raw: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        CoverArtLookupSize, OutputFormat, PregapAction, ReleaseSelection, SanitizeMethod,
-    };
+    use crate::{CoverArtLookupSize, OutputFormat, PregapAction, ReleaseSelection, SanitizeMethod};
     use std::collections::BTreeSet;
 
     #[test]
@@ -600,7 +614,10 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(cfg.settings.outputs, vec![OutputFormat::Flac, OutputFormat::Mp3]);
+        assert_eq!(
+            cfg.settings.outputs,
+            vec![OutputFormat::Flac, OutputFormat::Mp3]
+        );
         assert_eq!(cfg.settings.rip_indices, vec![1, 3, 5]);
         assert_eq!(cfg.settings.rip_indices_count, 3);
         assert_eq!(cfg.settings.pregap_action[0], PregapAction::Drop);
@@ -730,7 +747,10 @@ mod tests {
         assert_eq!(cfg.settings.dev_path.as_deref(), Some("/dev/cdrom"));
         assert_eq!(cfg.settings.offset, 6);
         assert_eq!(cfg.settings.speed, 4);
-        assert_eq!(cfg.settings.outputs, vec![OutputFormat::Flac, OutputFormat::Mp3]);
+        assert_eq!(
+            cfg.settings.outputs,
+            vec![OutputFormat::Flac, OutputFormat::Mp3]
+        );
         assert_eq!(cfg.settings.bitrate_kbps, 320.0);
         assert_eq!(cfg.settings.pregap_action[0], PregapAction::Drop);
         assert_eq!(cfg.settings.rip_indices, vec![1, 2, 3]);
@@ -757,7 +777,10 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(cfg.settings.album_metadata.as_deref(), Some("album=Test:album_artist=Tester"));
+        assert_eq!(
+            cfg.settings.album_metadata.as_deref(),
+            Some("album=Test:album_artist=Tester")
+        );
         assert_eq!(cfg.settings.track_metadata.len(), 2);
         assert_eq!(cfg.settings.cover_specs.len(), 2);
     }
@@ -838,14 +861,8 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_cover_track_index_with_exact_message() {
-        let err = parse_from_iter([
-            "cyanrip-rs",
-            "-C",
-            "1=track1-a.jpg",
-            "-C",
-            "1=track1-b.jpg",
-        ])
-        .unwrap_err();
+        let err = parse_from_iter(["cyanrip-rs", "-C", "1=track1-a.jpg", "-C", "1=track1-b.jpg"])
+            .unwrap_err();
         assert_eq!(err, "Cover art already specified for track idx 1!");
     }
 
@@ -894,15 +911,12 @@ mod tests {
     #[test]
     fn matches_upstream_short_option_surface() {
         let cmd = CliArgs::command();
-        let got: BTreeSet<char> = cmd
-            .get_arguments()
-            .filter_map(|a| a.get_short())
-            .collect();
+        let got: BTreeSet<char> = cmd.get_arguments().filter_map(|a| a.get_short()).collect();
 
         let expected: BTreeSet<char> = [
-            'd', 's', 'r', 'Z', 'S', 'p', 'P', 'O', 'H', 'E', 'W', 'K', 'o', 'b', 'D', 'F',
-            'B', 'L', 'M', 'l', 'T', 'I', 'J', 'a', 't', 'R', 'c', 'C', 'N', 'A', 'U', 'm',
-            'G', 'Q', 'f', 'Y',
+            'd', 's', 'r', 'Z', 'S', 'p', 'P', 'O', 'H', 'E', 'W', 'K', 'o', 'b', 'D', 'F', 'B',
+            'L', 'M', 'l', 'T', 'I', 'J', 'a', 't', 'R', 'c', 'C', 'N', 'A', 'U', 'm', 'G', 'Q',
+            'f', 'Y',
         ]
         .into_iter()
         .collect();
@@ -925,8 +939,10 @@ mod tests {
         assert!(help.contains("Track pregap handling: N=default|drop|merge|track (repeatable)"));
         assert!(help.contains("Only generate and print a CUE sheet, don't rip"));
         assert!(help.contains("Verify a rip log's FUN512 checksum"));
-        assert!(help.contains(
-            "Base output directory for ripped files (overrides CYANRIP_RS_OUTPUT_ROOT)"
-        ));
+        assert!(
+            help.contains(
+                "Base output directory for ripped files (overrides CYANRIP_RS_OUTPUT_ROOT)"
+            )
+        );
     }
 }

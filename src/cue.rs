@@ -59,7 +59,12 @@ pub struct CueDoc {
     pub force_deemphasis: bool,
 }
 
-fn write_meta_line_if_present(out: &mut String, meta: &BTreeMap<String, String>, key: &str, fmt: &str) {
+fn write_meta_line_if_present(
+    out: &mut String,
+    meta: &BTreeMap<String, String>,
+    key: &str,
+    fmt: &str,
+) {
     if let Some(v) = meta.get(key) {
         out.push_str(&fmt.replace("{}", v));
     }
@@ -148,7 +153,11 @@ pub fn render_cue(doc: &CueDoc) -> String {
         }
 
         let name = relative_file_name(&t.file_path, t.cue_path.as_deref());
-        out.push_str(&format!("FILE \"{}\" {}\n", name, t.file_type.as_cue_token()));
+        out.push_str(&format!(
+            "FILE \"{}\" {}\n",
+            name,
+            t.file_type.as_cue_token()
+        ));
 
         if !appended {
             out.push_str(&format!(

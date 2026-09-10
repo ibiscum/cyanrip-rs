@@ -60,6 +60,16 @@ Track frame count is adjusted by the magnitude of `settings.over_under_read_fram
 - `delta = abs(over_under_read_frames)`
 - `frame_count += delta`
 
+### Overread lead-in/lead-out behavior (`--overread`)
+
+`--overread` controls whether the read window is allowed to extend past the disc boundaries (lead-in/lead-out).
+
+- **Default**: disabled (`overread_leadinout = false`).
+- When disabled, frames that would fall outside the disc TOC are clipped from the read request and replaced with silence padding. This keeps the final track at the correct length without requiring the drive to read past the disc edge.
+- When enabled, the full shifted read window is requested from the drive and no silence padding is added for out-of-range frames.
+
+This interacts with the paranoia frame loop in `src/cdda/reader.rs`: boundary trimming is computed by `plan_track_read` in `src/app.rs` before the pass begins, and the reader consumes the already-clipped frame list.
+
 ### Cue-only guard (`-J`)
 
 Cue-only mode requires an explicitly set offset marker.

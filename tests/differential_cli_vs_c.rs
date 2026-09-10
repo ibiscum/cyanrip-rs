@@ -112,23 +112,27 @@ fn differential_cli_first_slice_against_c_binary() {
 
         if expect_success {
             assert_eq!(
-                rust_code, 0,
+                rust_code,
+                0,
                 "rust case {name} failed with {rust_code}; output:\n{}",
                 normalize(&rust_out)
             );
             assert_eq!(
-                c_code, 0,
+                c_code,
+                0,
                 "c case {name} failed with {c_code}; output:\n{}",
                 normalize(&c_out)
             );
         } else {
             assert_ne!(
-                rust_code, 0,
+                rust_code,
+                0,
                 "rust case {name} expected failure; output:\n{}",
                 normalize(&rust_out)
             );
             assert_ne!(
-                c_code, 0,
+                c_code,
+                0,
                 "c case {name} expected failure; output:\n{}",
                 normalize(&c_out)
             );

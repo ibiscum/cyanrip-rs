@@ -9,6 +9,15 @@ use sha2::{Digest, Sha512};
 pub const LOG_FUN512_MARKER: &str = "Log FUN512: ";
 pub const FUN512_MAX_IDX: u8 = 16;
 
+/// Computes the EAC CRC32 over raw bytes using the same CRC32 implementation
+/// as [`ChecksumCtx`]. Intended for repeat-rip pass checksums, where only
+/// consistency across passes is required.
+pub fn eac_crc32_from_bytes(data: &[u8]) -> u32 {
+    let mut hasher = Crc32Hasher::new();
+    hasher.update(data);
+    hasher.finalize()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogVerify {
     Valid,
@@ -209,7 +218,12 @@ mod tests {
         out
     }
 
-    fn reference_checksums(samples: &[u32], nb_samples: u32, first: bool, last: bool) -> ChecksumResult {
+    fn reference_checksums(
+        samples: &[u32],
+        nb_samples: u32,
+        first: bool,
+        last: bool,
+    ) -> ChecksumResult {
         let bytes = samples_to_le_bytes(samples);
         let mut crc = Crc32Hasher::new();
         crc.update(&bytes);
@@ -328,16 +342,13 @@ mod tests {
 
     #[test]
     fn checksum_ctx_matches_reference_for_first_last_windows() {
-        let samples: Vec<u32> = (0..8000).map(|i| (i as u32).wrapping_mul(97).wrapping_add(13)).collect();
+        let samples: Vec<u32> = (0..8000)
+            .map(|i| (i as u32).wrapping_mul(97).wrapping_add(13))
+            .collect();
         let bytes = samples_to_le_bytes(&samples);
         let nb_samples = samples.len() as u32;
 
-        let scenarios = [
-            (false, false),
-            (true, false),
-            (false, true),
-            (true, true),
-        ];
+        let scenarios = [(false, false), (true, false), (false, true), (true, true)];
 
         for (first, last) in scenarios {
             let mut ctx = ChecksumCtx::new(nb_samples, first, last);

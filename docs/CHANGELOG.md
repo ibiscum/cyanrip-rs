@@ -1,6 +1,57 @@
 # Migration Changelog
 
+## 2026-09-05
+
+### Runtime: Upstream-Style Per-Track Summary After Encoding
+- Added [src/audio/loudness.rs](../src/audio/loudness.rs) using the `ebur128` crate to compute EBU R128 integrated loudness, loudness range (LRA), true peak, and sample peak from 16-bit PCM.
+- Extended [src/fun512.rs](../src/fun512.rs) `ChecksumCtx` usage in [src/app.rs](../src/app.rs) to expose EAC CRC32 and AccurateRip v2 checksums alongside the existing v1 checksum.
+- Extended `TrackBoundary` and `TrackReadPlan` in [src/app.rs](../src/app.rs) to carry pregap LSN, end LSN, and preemphasis state from TOC/metadata into the rip path.
+- Added `TrackRipSummary`, `compute_track_rip_summary`, and `render_track_rip_summary` in [src/app.rs](../src/app.rs) to build and format the upstream-style `Summary:` block.
+- Wired the full-rip bridge to compute the summary after each track's encode thread completes, print it to the console, and append it to the runtime log.
+- The summary block includes: integrated loudness/LRA/true peak/sample peak, preemphasis status, duration/samples/frames/LSNs, EAC CRC32, AccurateRip v1/v2 with confidence, metadata (including creation time and EBU R128-derived ReplayGain/R128 gain values), embedded cover art, and written file paths.
+- Added `chrono` dependency for `creation_time` formatting.
+- Updated the integration test in [tests/run_workflow_cli.rs](../tests/run_workflow_cli.rs) to assert the new summary blocks.
+- Known follow-up: the EBU R128-derived ReplayGain/R128 values are currently only printed in the summary; the FLAC Vorbis tag embedding path still uses the older RMS-based ReplayGain approximation. Updating the tag embedding path is tracked in [Next_Steps.md](Next_Steps.md).
+
+### Runtime: AccurateRip Per-Track Verification Messages
+- Documented and verified the AccurateRip per-track verification path in [../src/app.rs](../src/app.rs).
+- The rip loop now prints one of four explicit outcomes per track after drive-offset-corrected PCM is acquired:
+  - `AccurateRip: verified for track N on attempt M with confidence C` — checksum matched an entry with confidence > 0.
+  - `AccurateRip: status found but confidence is 0 for track N ...` — DB returned entries but none had confidence.
+  - `AccurateRip: verification unavailable for track N ...` — AccuRip DB lookup succeeded but returned no entries for that specific track (empty `track_matches.entries`).
+  - `AccurateRip: mismatch on track N ... retrying track read` / `mismatch persisted` — checksum did not match and exact-rip enforcement retried or failed.
+- Updated parity matrix and completed-steps notes to mark rip-time AccurateRip v1 checksum verification as wired, with finish-summary aggregate counts still pending.
+
+### Runtime: Reuse One Native Paranoia Reader Per Physical Rip Session
+- Added session-level native paranoia reader helpers in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs):
+  - `open_native_paranoia_reader` opens a single `NativeParanoiaFrameReader` for reuse across a full physical rip.
+  - `run_with_native_paranoia_reader` runs one track through an already-open reader so the underlying `cdrom_paranoia` context is not reinitialized between tracks.
+- Refactored [../src/app.rs](../src/app.rs) physical-track acquisition to accept an optional `&mut NativeParanoiaFrameReader`:
+  - `acquire_track_pcm_from_physical_reader` now uses the supplied reader when present, otherwise falls back to the previous per-track opener.
+  - `acquire_tracks_pcm_from_physical_reader` now forwards the optional reader reference into each track call.
+  - `run_full_rip_from_selected_source` opens one native paranoia reader at the start of a physical paranoia session and drops it after the last track, analogous to upstream `cyanrip_ctx_end`.
+- Fixed the spurious `MediaChanged` abort (e.g., track 5 with `retry-limit-reached false`) caused by reopening the libcdio-paranoia context for each track. Some drive/kernel combinations report positive `cdio_get_media_changed` on the new handle, aborting the run before any frames finalize.
+- Compilation verified with `cargo check --features "backend-libcdio-sys paranoia cdda"`; all tests compile with `cargo test --features "backend-libcdio-sys paranoia cdda" --no-run`.
+
+
+
 Milestone status vocabulary in headings follows: complete, in progress, planned, deferred.
+
+## 2026-09-01
+
+### Runtime: Live Progress During Paranoia Ripping
+- Added a per-frame progress callback threaded through the paranoia read pipeline (`run_track_with_paranoia_heuristics_interruptible` in [../src/cdda/reader.rs](../src/cdda/reader.rs) and the `run_paranoia_on_linux_drive_*` wrapper chain in [../src/cdda/linux_drive.rs](../src/cdda/linux_drive.rs)), so callers can observe in-pass read progress instead of only a start/complete message.
+- Wired the physical-drive paranoia read in [../src/app.rs](../src/app.rs) to print a throttled `\r`-updated progress line (percentage + ETA) during ripping, matching the existing direct-read (non-paranoia) progress display.
+- Kept all other callers (image/synthetic read path, alternate public wrappers used by real-hardware validation tests) on a no-op progress callback, so their behavior and public signatures relying on the previous argument order are otherwise unaffected aside from the added parameter.
+
+## 2026-08-31
+
+### Runtime: Diagnostic Logging via `log`/`env_logger`
+- Added `log` and `env_logger` dependencies in [../Cargo.toml](../Cargo.toml) and initialized the logger in [../src/main.rs](../src/main.rs) with a default `warn` filter level, overridable via `RUST_LOG`.
+- Converted diagnostic `eprintln!`/`println!` warnings in [../src/app.rs](../src/app.rs) (paranoia non-convergence, persisted AccurateRip mismatch, output filename collisions, metadata-flow lookup warnings) to `log::warn!`/`log::error!`, and surfaced metadata-flow warnings immediately after metadata lookup instead of only in the final rip summary.
+- Added a `log::warn!` on each MusicBrainz HTTP 503 retry attempt in [../src/metadata/musicbrainz.rs](../src/metadata/musicbrainz.rs), so retries are visible before ripping starts.
+- Left the rip summary/report text, per-track progress lines, and `-I`/`-J`/`-Y` mode outputs as direct `println!` to preserve upstream `cyanrip` (C) output parity.
+- Added [logging.md](logging.md), documenting the logging facility, verbosity control, and the split between logged diagnostics and protocol-output console text.
 
 ## 2026-08-28
 
