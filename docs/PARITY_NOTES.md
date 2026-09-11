@@ -1,6 +1,6 @@
 # Parity Notes
 
-Last updated: 2026-08-28
+Last updated: 2026-09-11
 
 This document tracks implementation differences that are currently accepted and not treated as regressions.
 
@@ -14,9 +14,10 @@ This document tracks implementation differences that are currently accepted and 
 - Current Rust runtime scope is WAV/FLAC-centric.
 - Wider codec parity remains explicitly deferred and tracked in [../PARITY_MATRIX.md](../PARITY_MATRIX.md).
 
-3. AccurateRip runtime verification depth
-- AccurateRip DB fetch/parsing exists and is exercised, but full rip-time checksum generation/match-summary parity is still planned.
-- This is tracked as planned work in [../PARITY_MATRIX.md](../PARITY_MATRIX.md) and [Next_Steps.md](Next_Steps.md).
+3. AccurateRip finish-summary parity (accepted remaining gap)
+- Per-track AccurateRip v1/v2 verification is implemented and emitted during ripping.
+- Remaining parity gap is finish-summary aggregation counts (`Tracks ripped accurately` / `Tracks ripped partially accurately`) in runtime bridge output.
+- This is tracked in [../PARITY_MATRIX.md](../PARITY_MATRIX.md) and [Next_Steps.md](Next_Steps.md).
 
 4. Hardware/backend-dependent eject behavior
 - `-Q/--eject` is implemented in Linux `backend-libcdio-sys` path with capability checks.
@@ -26,10 +27,14 @@ This document tracks implementation differences that are currently accepted and 
 - Automated real-drive scenarios (TOC read, frame read, paranoia run, interruption abort path) are passing on `/dev/cdrom` via `scripts/run_m6_hardware_validation.sh`.
 - Manual media-change scenario executed and recorded in [M6_REAL_HARDWARE_VALIDATION.md](M6_REAL_HARDWARE_VALIDATION.md).
 
-6. Paranoia integrated loop parity (temporary accepted difference)
-- Current Rust full-rip path performs a paranoia precheck pass and then a separate direct-read pass for PCM acquisition.
-- Upstream uses a single integrated frame loop where paranoia-read frames are the same frames consumed for checksum and encode decisions.
-- This difference is accepted temporarily and tracked for closure in [paranoia_upstream_parity_plan.md](paranoia_upstream_parity_plan.md).
+6. Paranoia callback/status closure on real hardware (accepted remaining gap)
+- Physical full-rip now uses the integrated paranoia reader path with a single native session reused across tracks, and paranoia-produced frames are consumed directly.
+- Remaining work is broader real-hardware edge-case coverage and callback/status parity closure.
+- This is tracked in [../PARITY_MATRIX.md](../PARITY_MATRIX.md) and [paranoia_upstream_parity_plan.md](paranoia_upstream_parity_plan.md).
+
+7. Ripping availability vs parity completeness
+- Full-rip execution paths are functional in current scope (image + linux physical), including acquisition, processing, naming, writing, and per-track summary output.
+- Open items are parity-completeness deltas, not baseline ripping availability gaps.
 
 ## Policy
 

@@ -384,7 +384,11 @@ pub fn build_track_relative_path(
     extension: &str,
 ) -> Result<String, String> {
     let folder = render_scheme(ctx, album_meta, format_suffix, folder_scheme)?;
-    let file = render_scheme(ctx, track_meta, format_suffix, track_scheme)?;
+    // Track-file schemes may reference album-level tags such as disc/totaldiscs.
+    // Merge album and track maps so track keys still take precedence.
+    let mut merged_track_meta = album_meta.clone();
+    merged_track_meta.extend(track_meta.clone());
+    let file = render_scheme(ctx, &merged_track_meta, format_suffix, track_scheme)?;
     let path = format!("{folder}/{file}.{extension}");
     Ok(trim_path_components(&path, '/'))
 }
@@ -579,6 +583,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out, "Example Album [FLAC]/01 - Intro.flac");
+    }
+
+    #[test]
+    fn builds_track_path_with_disc_prefix_from_album_meta() {
+        let ctx = mkctx(SanitizeMethod::Unicode, 12);
+        let album = map(&[
+            ("album", "Example Album"),
+            ("disc", "2"),
+            ("totaldiscs", "3"),
+        ]);
+        let track = map(&[("track", "01"), ("title", "Intro")]);
+        let out = build_track_relative_path(
+            &ctx,
+            &album,
+            &track,
+            "{album} [{format}]",
+            "{if #totaldiscs# > #1#|disc|.}{track} - {title}",
+            "FLAC",
+            "flac",
+        )
+        .unwrap();
+
+        assert_eq!(out, "Example Album [FLAC]/2.01 - Intro.flac");
     }
 
     #[test]

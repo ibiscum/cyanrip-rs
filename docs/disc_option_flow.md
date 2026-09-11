@@ -1,6 +1,6 @@
 # `-c/--disc` Option Flow
 
-Last updated: 2026-08-28
+Last updated: 2026-09-11
 
 This document explains the purpose of `--disc`, how it is parsed and mapped, and how it is consumed by runtime metadata flows in cyanrip-rs.
 
@@ -61,6 +61,8 @@ This helps select/validate the appropriate medium for multi-disc releases.
 
 Album metadata construction can include disc-related fields (`disc`, `totaldiscs`) and feed naming/template expansion.
 
+This includes per-track filename rendering: track naming now evaluates against merged album + track metadata so default multi-disc prefixes are stable.
+
 ### FLAC metadata embedding
 
 For FLAC output, disc fields are written when set:
@@ -72,6 +74,7 @@ For FLAC output, disc fields are written when set:
 
 - `--release` works with `--disc` to disambiguate multi-disc releases.
 - naming schemes using `{disc}` and `{totaldiscs}` can reflect these values in filenames/path components.
+- default track naming uses this directly for multi-disc sets: `{disc}.{track} - {title}`.
 - if MusicBrainz provides release disc data, runtime metadata merge rules may also provide these fields.
 
 ## Implementation Status
@@ -84,6 +87,7 @@ Implemented now:
 - parse validation and settings mapping for `discnumber/totaldiscs`.
 - runtime consumption in MusicBrainz selection flows (info/cue-only and metadata paths).
 - propagation to FLAC Vorbis tags (`DISCNUMBER`, `DISCTOTAL`) when configured.
+- propagation to track filename rendering via naming metadata merge and settings-level fallback.
 - parser and runtime coverage for valid and invalid cases.
 
 Known limits:

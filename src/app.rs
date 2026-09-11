@@ -4036,7 +4036,26 @@ fn run_full_rip_from_selected_source(settings: &Settings) -> Result<String, RunW
                     .entry("date".to_string())
                     .or_insert_with(|| date.to_string());
             }
+            album_meta
+                .entry("totaldiscs".to_string())
+                .or_insert_with(|| release.totaldiscs.to_string());
+            if let Some(discnumber) = release.discnumber {
+                album_meta
+                    .entry("disc".to_string())
+                    .or_insert_with(|| discnumber.to_string());
+            }
         }
+    }
+
+    if settings.totaldiscs > 0 {
+        album_meta
+            .entry("totaldiscs".to_string())
+            .or_insert_with(|| settings.totaldiscs.to_string());
+    }
+    if settings.discnumber > 0 {
+        album_meta
+            .entry("disc".to_string())
+            .or_insert_with(|| settings.discnumber.to_string());
     }
 
     album_meta
@@ -5052,12 +5071,29 @@ fn flac_embedded_picture_from_cover_arts(
     })
 }
 
+fn album_meta_for_naming(
+    settings: &Settings,
+    album_meta: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut out = album_meta.clone();
+    if settings.totaldiscs > 0 {
+        out.entry("totaldiscs".to_string())
+            .or_insert_with(|| settings.totaldiscs.to_string());
+    }
+    if settings.discnumber > 0 {
+        out.entry("disc".to_string())
+            .or_insert_with(|| settings.discnumber.to_string());
+    }
+    out
+}
+
 fn warn_track_path_collisions_for_formats(
     settings: &Settings,
     album_meta: &HashMap<String, String>,
     tracks: &[(u32, HashMap<String, String>)],
     naming_track_count: usize,
 ) -> Result<(), TrackOutputFlowError> {
+    let effective_album_meta = album_meta_for_naming(settings, album_meta);
     let naming_ctx = NamingContext {
         sanitize_method: settings.sanitize_method,
         nb_tracks: naming_track_count,
@@ -5071,7 +5107,7 @@ fn warn_track_path_collisions_for_formats(
         for (track_number, track_meta) in tracks {
             let relative_path_str = build_track_relative_path(
                 &naming_ctx,
-                album_meta,
+                &effective_album_meta,
                 track_meta,
                 &settings.folder_name_scheme,
                 &settings.track_name_scheme,
@@ -5098,6 +5134,7 @@ fn write_track_outputs_with_naming_tracks(
     emit_collision_warnings: bool,
     progress_track_number: Option<u32>,
 ) -> Result<TrackOutputFlowResult, TrackOutputFlowError> {
+    let effective_album_meta = album_meta_for_naming(&input.settings, &input.album_meta);
     let naming_ctx = NamingContext {
         sanitize_method: input.settings.sanitize_method,
         nb_tracks: naming_track_count,
@@ -5163,7 +5200,7 @@ fn write_track_outputs_with_naming_tracks(
         for (idx, track) in input.tracks.iter().enumerate() {
             let relative_path_str = build_track_relative_path(
                 &naming_ctx,
-                &input.album_meta,
+                &effective_album_meta,
                 &track.track_meta,
                 &input.settings.folder_name_scheme,
                 &input.settings.track_name_scheme,
@@ -6791,6 +6828,53 @@ FILE "disc.bin" BINARY
         assert_eq!(
             first_vorbis_value(&flac_tag, "DISCTOTAL").as_deref(),
             Some("2")
+        );
+
+        let cleanup = std::fs::remove_dir_all(&output_root);
+        assert!(cleanup.is_ok(), "temporary output root should be removable");
+    }
+
+    #[test]
+    fn default_track_scheme_prefixes_disc_for_multi_disc_sets() {
+        let output_root = unique_temp_output_root();
+
+        let settings = Settings {
+            outputs: vec![OutputFormat::Flac],
+            folder_name_scheme: "{album} [{format}]".to_string(),
+            discnumber: 2,
+            totaldiscs: 3,
+            ..Settings::default()
+        };
+
+        let album_meta: HashMap<String, String> = [
+            ("album".to_string(), "Example Album".to_string()),
+            ("album_artist".to_string(), "Example Artist".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let tracks = vec![TrackOutputInput {
+            track_number: 1,
+            track_meta: track_meta("01", "Intro"),
+            pcm: sample_pcm(),
+        }];
+
+        let result = write_track_outputs(TrackOutputFlowInput {
+            settings,
+            output_root: output_root.clone(),
+            album_meta,
+            cover_arts: Vec::new(),
+            tracks,
+        })
+        .expect("default track naming should include disc prefix for multi-disc sets");
+
+        assert_eq!(result.written_files.len(), 1);
+
+        let expected = output_root.join("Example Album [FLAC]/2.01 - Intro.flac");
+        assert!(
+            expected.exists(),
+            "expected multi-disc prefixed track path to exist: {}",
+            expected.display()
         );
 
         let cleanup = std::fs::remove_dir_all(&output_root);

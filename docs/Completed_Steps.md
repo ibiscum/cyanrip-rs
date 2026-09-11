@@ -1,6 +1,6 @@
 # Completed Steps
 
-Last updated: 2026-09-05
+Last updated: 2026-09-11
 
 This document summarizes completed migration steps and major code changes.
 
@@ -56,6 +56,7 @@ Implemented in naming module:
 - conditional scheme rendering with if #...# support
 - path component trimming behavior
 - track path builder helper
+- track-path parity for multi-disc default naming by evaluating track schemes against merged album+track metadata (enables stable `{disc}.{track}` prefix behavior)
 
 Key file:
 - [../src/naming.rs](../src/naming.rs)
@@ -66,6 +67,7 @@ Key file:
 Coverage notes:
 - Added snapshot-style fixtures for deterministic start and finish report rendering.
 - Added deterministic checksum parity tests for first/last-track windows and chunked input processing.
+- Added regression coverage for multi-disc track filename prefix rendering (`2.01 - ...`) in naming-level and app writer-path tests.
 
 ## M3 Metadata Services
 

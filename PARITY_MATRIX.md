@@ -1,6 +1,6 @@
 # Parity Matrix (C -> Rust)
 
-Last updated: 2026-09-05
+Last updated: 2026-09-11
 
 Legend:
 - Complete: Implemented in Rust with regression tests.
@@ -33,7 +33,7 @@ Source baseline is /cyanrip/src.
 | Verify-log action dispatch | cyanrip_main.c + fun512.c | verify-log short-circuit parse path and checksum status mapping | src/cli.rs + src/main.rs + src/fun512.rs | Complete | Yes |
 | Eject option runtime behavior | cyanrip_main.c | success-path cleanup eject for capable physical drives; parser side effects disable in info/find-offset modes | src/cli.rs + src/app.rs + src/cdda/linux_drive.rs | Complete (Linux libcdio-sys scope) | Yes |
 | No-coverart-embed runtime behavior | cyanrip_encode.c | disable embedded cover art while keeping cover discovery and standalone cover-file behavior | src/cli.rs + src/app.rs | Complete (FLAC scope) | Yes |
-| Name templating | naming.c | template interpolation, conditional expansion, path-kind builders (track/log/cue/cover), collision checks, and optional parent-dir creation | src/naming.rs | Complete | Yes |
+| Name templating | naming.c | template interpolation, conditional expansion, path-kind builders (track/log/cue/cover), collision checks, optional parent-dir creation, and multi-disc default track prefix parity (`disc.track`) via merged album+track tag evaluation | src/naming.rs + src/app.rs | Complete | Yes |
 | Path sanitation | naming.c + os_compat.h | platform-sensitive replacement policy | src/naming.rs | Complete | Yes |
 | CUE writer | cue_writer.c | CUE generation and track mapping details (metadata lines, per-track FILE/TRACK records, pregap/index handling, preemphasis/ISRC plus SONGWRITER/COMPOSER/ARRANGER, FLAGS PRE/DCP/4CH/SCMS, POSTGAP, and cue-path-relative filenames) | src/cue.rs + src/app.rs cue-track ingestion | Complete | Yes |
 | Log formatter | cyanrip_log.c | report formatting, status lines, checksum sections | src/log_report.rs | Complete (deterministic sections) | Yes |
@@ -61,16 +61,16 @@ Source baseline is /cyanrip/src.
 
 ## Current Gap Summary
 
-- Implemented and test-covered: core settings and validation logic from CLI/control path plus deterministic naming/cue/log/checksum modules, all M3 metadata core modules, and metadata-flow orchestration.
-- Major gaps: CD I/O backend integration and broader end-to-end real-drive parity hardening.
-- Paranoia mode status: control-path state machine is consumed by physical full-rip bridge path. Paranoia-enabled physical runs now reuse a single native reader for all tracks and consume paranoia-produced frames directly; the precheck-plus-direct-read split is removed for those runs. Callback/status parity and edge-case coverage on real hardware remain pending.
-- AccurateRip rip-time status: per-track v1/v2 checksum verification is wired and prints `verified` / `confidence is 0` / `verification unavailable` / `mismatch` messages during ripping. `verification unavailable` specifically means the AccuRip DB lookup succeeded but returned no entries for that track. Retry-on-mismatch has been removed to match upstream behavior; `--repeat-rips` still compares EAC CRC32 across passes. Aggregate finish-summary counts are not yet populated.
-- Per-track summary status: upstream-style `Summary:` block is printed to console after each track is encoded and appended to the runtime log. It includes EBU R128 integrated loudness/LRA/true peak, EAC CRC32, AccuRip v1/v2, preemphasis flag, track properties (duration/samples/frames/LSNs), metadata, embedded cover art, and written file paths.
-- Deferred explicitly: full codec parity and remaining ReplayGain/EBU R128 parity outside current FLAC-scope path (note: summary now computes EBU R128-based ReplayGain/R128 values, but FLAC tag embedding still uses the existing RMS-based approximation).
+- Implemented and test-covered: core CLI/control behavior, deterministic naming/CUE/log/checksum modules, metadata services/orchestration, and functional full-rip execution paths (image + linux physical scope) through acquisition, processing, naming, writing, and per-track summary output.
+- Remaining major gaps are parity-completeness items, not baseline ripping availability: real-hardware edge-case validation breadth, some finish-summary aggregation parity, and remaining tagging/reporting deltas.
+- Paranoia mode status: physical full-rip uses the integrated paranoia reader path (single native session reused across tracks) and consumes paranoia-produced frames directly. Remaining work is callback/status parity closure and broader real-hardware edge-case coverage.
+- AccurateRip rip-time status: per-track v1/v2 verification messages are emitted during ripping (`verified`, `confidence is 0`, `verification unavailable`, `mismatch`), with mismatch retry behavior aligned to upstream (no auto retry-on-mismatch). Remaining gap: aggregate finish-summary counts are still not populated.
+- Per-track summary status: upstream-style `Summary:` is printed after each encoded track and appended to the runtime log, including EBU R128 loudness metrics, EAC CRC32, AccuRip v1/v2, preemphasis, track properties, metadata, cover-art entries, and written file paths.
+- Deferred explicitly: full multi-codec parity remains out of scope; FLAC-path replaygain tag embedding still uses RMS-based approximation while EBU R128 values are already available in runtime summary output.
 
 ## Immediate Next Slice
 
-1. Validate libcdio-backed Linux adapter on real hardware and complete callback/paranoia parity checks.
-2. Keep unsupported codecs behind explicit deferred errors (FLAC-only target).
-3. Revisit non-FLAC codec scope only if project direction changes.
-4. Keep error semantics aligned to this parity matrix and update statuses as features land.
+1. Expand real-hardware validation matrix for linux libcdio/paranoia runs and close remaining callback/status parity checks.
+2. Implement AccurateRip finish-summary aggregate counts (`Tracks ripped accurately` / `partially accurately`) in the runtime bridge output.
+3. Align FLAC tag embedding with EBU R128-based gain values (keeping existing summary output behavior).
+4. Keep deferred codec boundaries explicit and continue updating matrix status lines as each remaining parity gap closes.
