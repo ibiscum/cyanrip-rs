@@ -1,6 +1,6 @@
 # Parity Matrix (C -> Rust)
 
-Last updated: 2026-09-11
+Last updated: 2026-10-02
 
 Legend:
 - Complete: Implemented in Rust with regression tests.
@@ -53,11 +53,11 @@ Source baseline is /cyanrip/src.
 | Per-track output dispatch | cyanrip_main.c + cyanrip_encode.c | select configured output formats and emit concrete per-track files | src/app.rs write_track_outputs | Complete (WAV/FLAC scope) | Yes |
 | FLAC metadata embedding | cyanrip_encode.c + cyanrip_main.c metadata flow | propagate album/track/disc metadata into FLAC Vorbis comments and attach cover art when enabled | src/app.rs write_track_outputs + metaflac | Complete (FLAC scope) | Yes |
 | HDCD/deemphasis option handling | cyanrip_encode.c + cyanrip_main.c | processing-path selection precedence: HDCD over deemphasis; -W disables auto-deemphasis; -E forces deemphasis unless HDCD path is selected | src/audio/process.rs + src/app.rs | Complete (ffmpeg hdcd backend wired; 24-bit output propagation for WAV/FLAC) | Yes |
-| FIFO frame/packet queues | fifo_frame.c + fifo_packet.c | thread-safe producer-consumer queues | src/audio/queue.rs | Planned | No |
+| FIFO frame/packet queues | fifo_frame.c + fifo_packet.c | thread-safe producer-consumer queues | src/audio/ (queue module planned) | Planned | No |
 | Paranoia ripping state machine | cyanrip_main.c + cdio/paranoia callbacks | retry loop, retry-limit finalize, media-changed abort, and flush/finalize transitions | src/cdda/paranoia.rs + src/cdda/reader.rs + src/app.rs | In progress (state machine wired and consumed by physical full-rip; precheck-plus-direct-read split removed for paranoia-enabled paths) | Yes |
 | CD image + drive access | cyanrip_main.c + libcdio/paranoia | media read, retries, hot-remove checks | src/cdda/reader.rs + src/cdda/linux_drive.rs + src/app.rs | In progress (image-backed + Linux adapters wired; one native paranoia session reader is now opened per physical rip and reused across tracks, matching upstream `ctx->paranoia` lifetime; broader real-drive parity still pending) | Yes |
 | ReplayGain and EBU R128 | cyanrip_main.c + cyanrip_encode.c | album/track loudness metadata computation | src/app.rs FLAC tag flow + src/audio/loudness.rs | In progress (EBU R128 loudness values computed and shown in per-track summary; FLAC tag embedding still uses RMS-based ReplayGain approximation; EBU R128-based tag embedding pending) | Yes (FLAC scope) |
-| Full codec parity set | cyanrip_encode.c | FLAC, MP3, TTA, OPUS, AAC, WV, VORBIS, ALAC, WAV, PCM | src/audio/codecs/* | Deferred (out of current scope: FLAC-only target) | No |
+| Full codec parity set | cyanrip_encode.c | FLAC, MP3, TTA, OPUS, AAC, WV, VORBIS, ALAC, WAV, PCM | src/audio/ (additional codec modules deferred) | Deferred (out of current scope: FLAC-only target) | No |
 
 ## Current Gap Summary
 
